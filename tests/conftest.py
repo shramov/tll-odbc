@@ -30,6 +30,8 @@ def odbcini(tmp_path_factory):
 Description=Test SQLite database
 Driver=SQLite3
 Database={db}
+Trace=Yes
+TraceFile={tmp_path}/sqlite.log
 """)
     os.environ["ODBCINI"] = str(tmp_path / "odbc.ini")
     return {'ini': os.environ["ODBCINI"], 'db': db}
