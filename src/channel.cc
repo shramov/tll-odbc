@@ -147,6 +147,8 @@ int ODBC::_open(const ConstConfig &s)
 int ODBC::_close()
 {
 	_messages.clear();
+	if (_db.ptr)
+		SQLDisconnect(_db);
 	_db.reset();
 	_env.reset();
 	return Base::_close();
