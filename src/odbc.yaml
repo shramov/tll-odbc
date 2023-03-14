@@ -1,0 +1,25 @@
+- name: Begin
+  id: 10
+- name: Commit
+  id: 20
+- name: Rollback
+  id: 30
+
+- name: Expression
+  enums:
+    Operator: {type: int8, enum: {EQ: 0, NE: 1, GT: 2, GE: 3, LT: 4, LE: 5}}
+  unions:
+    Any: {union: [{name: i, type: int64}, {name: f, type: double}, {name: s, type: string}]}
+  fields:
+    - {name: field, type: string}
+    - {name: op, type: Operator}
+    - {name: value, type: Any}
+
+- name: Query
+  id: 40
+  fields:
+    - {name: message, type: int32} # Message id to select
+    - {name: expression, type: '*Expression'}
+
+- name: EndOfData
+  id: 50
