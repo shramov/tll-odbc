@@ -8,6 +8,8 @@
 #include <sql.h>
 #include <sqlext.h>
 
+#include "odbc-scheme.h"
+
 using namespace tll;
 
 template <SQLSMALLINT Type>
@@ -35,126 +37,27 @@ struct SQLHandle
 
 using query_ptr_t = SQLHandle<SQL_HANDLE_STMT>;
 
-class ODBC : public tll::channel::Base<ODBC>
+struct Prepared
 {
-	using Base = tll::channel::Base<ODBC>;
-
-	SQLHandle<SQL_HANDLE_ENV> _env;
-	SQLHandle<SQL_HANDLE_DBC> _db;
-
-	std::string _settings;
-
-	struct Insert
-	{
-		Insert(query_ptr_t && ptr) : sql(std::move(ptr)) {}
-		query_ptr_t sql;
-		std::vector<SQLLEN> param;
+	Prepared(query_ptr_t && ptr) : sql(std::move(ptr)) {}
+	query_ptr_t sql;
+	const tll::scheme::Message * message = nullptr;
+	std::vector<SQLLEN> param;
+	union Convert {
+		int64_t i;
+		double d;
+		char * c;
 	};
-
-	std::map<int, std::pair<const tll::scheme::Message *, Insert>> _messages;
-
-	enum class Index { No, Yes, Unique } _seq_index = Index::Unique;
-
- public:
-//	static constexpr std::string_view sqlite_control_scheme() { return sqlite_scheme::scheme; }
-
-	static constexpr std::string_view channel_protocol() { return "odbc"; }
-
-	int _init(const tll::Channel::Url &, tll::Channel *master);
-	int _open(const tll::ConstConfig &);
-	int _close();
-	//void _destroy();
-
-	int _post(const tll_msg_t *msg, int flags);
-	//int _process(long timeout, int flags);
-
- private:
-	int _create_table(std::string_view table, const tll::scheme::Message *);
-	int _create_statement(std::string_view table, const tll::scheme::Message *);
-	int _create_index(const std::string_view &name, std::string_view key, bool unique);
-
-	SQLHSTMT _prepare(const std::string_view query)
-	{
-		_log.debug("Prepare SQL statement:\n\t{}", query);
-		query_ptr_t sql;
-		if (auto r = SQLAllocHandle(SQL_HANDLE_STMT, _db, &sql.ptr); r != SQL_SUCCESS)
-			return _log.fail(nullptr, "Failed to allocate statement: {}\n\t{}", r, query);
-		if (auto r = SQLPrepare(sql, (SQLCHAR *) query.data(), query.size()); r != SQL_SUCCESS)
-			return _log.fail(nullptr, "Failed to prepare statement: {}\n\t{}", r, query);
-		return sql.release();
-	}
+	std::vector<Convert> convert;
 };
 
-int ODBC::_init(const Channel::Url &url, Channel * master)
-{
-	auto reader = channel_props_reader(url);
-	auto host = url.host();
-	if (!host.size())
-		return _log.fail(EINVAL, "Empty database name");
-	_settings = fmt::format("DSN={}", host);
-
-	if (!reader)
-		return _log.fail(EINVAL, "Invalid url: {}", reader.error());
-
-	return Base::_init(url, master);
-}
-
-int ODBC::_open(const ConstConfig &s)
-{
-	if (auto r = Base::_open(s); r)
-		return _log.fail(r, "Failed to open ODBC database");
-
-	SQLHENV henv = nullptr;
-	if (auto r = SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &henv); r != SQL_SUCCESS)
-		return _log.fail(EINVAL, "Failed to allocate ODBC Environment: {}", r);
-	_env.reset(henv);
-
-        if (auto r = SQLSetEnvAttr(_env, SQL_ATTR_ODBC_VERSION, (SQLPOINTER)SQL_OV_ODBC3, 0); r != SQL_SUCCESS)
-		return _log.fail(EINVAL, "Failed to request ODBCv3: {}", r);
-
-	SQLHDBC hdbc = nullptr;
-	if (auto r = SQLAllocHandle(SQL_HANDLE_DBC, _env, &hdbc); r != SQL_SUCCESS)
-		return _log.fail(EINVAL, "Failed to allocate ODBC Connection: {}", r);
-	_db.reset(hdbc);
-
-	char buf[SQL_MAX_OPTION_STRING_LENGTH];
-	SQLSMALLINT buflen = sizeof(buf);
-	if (auto r = SQLDriverConnect (_db, nullptr, (SQLCHAR *) _settings.data(), _settings.size(),
-                               (SQLCHAR *) buf, sizeof(buf), &buflen, SQL_DRIVER_NOPROMPT); r != SQL_SUCCESS) {
-		return _log.fail(EINVAL, "Failed to connect to {}", _settings);
-	}
-	_log.info("Connection string: {}", buf); //std::string_view(buf, buflen));
-
-	auto table_name = s.get("table");
-
-	for (auto & m : tll::util::list_wrap(_scheme->messages)) {
-		if (m.msgid == 0) {
-			_log.debug("Message {} has no msgid, skip table check", m.name);
-			continue;
-		}
-
-		auto table = tll::getter::get(m.options, "sql.table").value_or(std::string_view(m.name));
-
-		if (_create_table(table, &m))
-			return _log.fail(EINVAL, "Failed to create table '{}' for '{}'", table, m.name);
-		if (_create_statement(table, &m))
-			return _log.fail(EINVAL, "Failed to prepare SQL statement for '{}'", m.name);
-	}
-
-	return 0;
-}
-
-int ODBC::_close()
-{
-	_messages.clear();
-	if (_db.ptr)
-		SQLDisconnect(_db);
-	_db.reset();
-	_env.reset();
-	return Base::_close();
-}
-
 namespace {
+bool is_offset_string(const tll::scheme::Field * f)
+{
+	using tll::scheme::Field;
+	return f->type == Field::Pointer && f->type_ptr->type == Field::Int8 && f->sub_type == Field::ByteString;
+}
+
 template <typename Iter>
 std::string join(std::string_view sep, const Iter &begin, const Iter &end)
 {
@@ -249,6 +152,7 @@ int sql_bind(SQLHSTMT sql, std::vector<SQLLEN> param, int idx, const tll::scheme
 			param[idx] = strnlen(str, field->size);
 			return SQLBindParam(sql, idx, SQL_C_CHAR, SQL_VARCHAR, 0, 0, (SQLPOINTER) str, &param[idx]);
 		}
+		return SQL_ERROR;
 
 	case Field::Message:
 		return SQL_ERROR;
@@ -271,6 +175,211 @@ int sql_bind(SQLHSTMT sql, std::vector<SQLLEN> param, int idx, const tll::scheme
 	return SQL_ERROR;
 }
 
+template <typename Buf>
+int sql_column(SQLHSTMT sql, Prepared &prepared, int idx, const tll::scheme::Field *field, Buf data)
+{
+	using tll::scheme::Field;
+	switch (field->type) {
+	case Field::Int8:
+		return SQLBindCol(sql, idx, SQL_C_STINYINT, data.data(), sizeof(int8_t), &prepared.param[idx]);
+	case Field::Int16:
+		return SQLBindCol(sql, idx, SQL_C_SSHORT, data.data(), sizeof(int16_t), &prepared.param[idx]);
+	case Field::Int32:
+		return SQLBindCol(sql, idx, SQL_C_SLONG, data.data(), sizeof(int32_t), &prepared.param[idx]);
+	case Field::Int64:
+		return SQLBindCol(sql, idx, SQL_C_SBIGINT, data.data(), sizeof(int64_t), &prepared.param[idx]);
+	case Field::UInt8:
+		return SQLBindCol(sql, idx, SQL_C_UTINYINT, data.data(), sizeof(uint8_t), &prepared.param[idx]);
+	case Field::UInt16:
+		return SQLBindCol(sql, idx, SQL_C_USHORT, data.data(), sizeof(uint16_t), &prepared.param[idx]);
+	case Field::UInt32:
+		return SQLBindCol(sql, idx, SQL_C_ULONG, data.data(), sizeof(uint32_t), &prepared.param[idx]);
+
+	case Field::Double:
+		return SQLBindCol(sql, idx, SQL_C_DOUBLE, data.data(), sizeof(double), &prepared.param[idx]);
+
+	case Field::UInt64:
+	case Field::Decimal128:
+		return SQL_ERROR;
+
+	case Field::Bytes:
+		if (field->sub_type == Field::ByteString) {
+			return SQLBindCol(sql, idx, SQL_C_CHAR, data.data(), field->size, &prepared.param[idx]);
+		}
+		return SQL_ERROR;
+
+	case Field::Message:
+		return SQL_ERROR;
+	case Field::Array:
+		return SQL_ERROR;
+	case Field::Pointer:
+		if (field->type_ptr->type == Field::Int8 && field->sub_type == Field::ByteString) {
+			return SQLBindCol(sql, idx, SQL_C_CHAR, prepared.convert[idx].c, 1024, &prepared.param[idx]);
+		}
+		return SQL_ERROR;
+	case Field::Union:
+		return SQL_ERROR;
+	}
+	return SQL_ERROR;
+}
+
+}
+
+class ODBC : public tll::channel::Base<ODBC>
+{
+	using Base = tll::channel::Base<ODBC>;
+
+	SQLHandle<SQL_HANDLE_ENV> _env;
+	SQLHandle<SQL_HANDLE_DBC> _db;
+	Prepared * _select = nullptr;
+
+	std::string _settings;
+	std::vector<char> _buf;
+	std::vector<std::vector<char>> string_buffers;
+
+	std::map<int, Prepared> _messages;
+
+	enum class Index { No, Yes, Unique } _seq_index = Index::Unique;
+
+ public:
+	static constexpr auto process_policy() { return ProcessPolicy::Custom; }
+
+	static constexpr std::string_view channel_protocol() { return "odbc"; }
+
+	int _init(const tll::Channel::Url &, tll::Channel *master);
+	int _open(const tll::ConstConfig &);
+	int _close();
+	//void _destroy();
+
+	int _post(const tll_msg_t *msg, int flags);
+	int _post_control(const tll_msg_t *msg, int flags);
+	int _process(long timeout, int flags);
+
+ private:
+	int _create_table(std::string_view table, const tll::scheme::Message *);
+	int _create_insert(std::string_view table, const tll::scheme::Message *);
+	int _create_select(std::string_view table, const tll::scheme::Message *);
+	int _create_index(const std::string_view &name, std::string_view key, bool unique);
+
+	SQLHSTMT _prepare(const std::string_view query)
+	{
+		_log.debug("Prepare SQL statement:\n\t{}", query);
+		query_ptr_t sql;
+		if (auto r = SQLAllocHandle(SQL_HANDLE_STMT, _db, &sql.ptr); r != SQL_SUCCESS)
+			return _log.fail(nullptr, "Failed to allocate statement: {}\n\t{}", r, query);
+		if (auto r = SQLPrepare(sql, (SQLCHAR *) query.data(), query.size()); r != SQL_SUCCESS)
+			return _log.fail(nullptr, "Failed to prepare statement: {}\n\t{}", r, query);
+		return sql.release();
+	}
+};
+
+int ODBC::_init(const Channel::Url &url, Channel * master)
+{
+	auto reader = channel_props_reader(url);
+	auto host = url.host();
+	if (!host.size())
+		return _log.fail(EINVAL, "Empty database name");
+	_settings = fmt::format("DSN={}", host);
+
+	if (!reader)
+		return _log.fail(EINVAL, "Invalid url: {}", reader.error());
+
+	if ((internal.caps & caps::InOut) == 0) // Defaults to input
+		internal.caps |= caps::Input;
+	if ((internal.caps & caps::InOut) == caps::InOut)
+		return _log.fail(EINVAL, "odbc:// can be either read-only or write-only, need proper dir in parameters");
+
+	_scheme_control.reset(context().scheme_load(odbc_scheme::scheme_string));
+	if (!_scheme_control.get())
+		return _log.fail(EINVAL, "Failed to load odbc control scheme");
+
+	return Base::_init(url, master);
+}
+
+int ODBC::_open(const ConstConfig &s)
+{
+	if (auto r = Base::_open(s); r)
+		return _log.fail(r, "Failed to open ODBC database");
+
+	SQLHENV henv = nullptr;
+	if (auto r = SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &henv); r != SQL_SUCCESS)
+		return _log.fail(EINVAL, "Failed to allocate ODBC Environment: {}", r);
+	_env.reset(henv);
+
+        if (auto r = SQLSetEnvAttr(_env, SQL_ATTR_ODBC_VERSION, (SQLPOINTER)SQL_OV_ODBC3, 0); r != SQL_SUCCESS)
+		return _log.fail(EINVAL, "Failed to request ODBCv3: {}", r);
+
+	SQLHDBC hdbc = nullptr;
+	if (auto r = SQLAllocHandle(SQL_HANDLE_DBC, _env, &hdbc); r != SQL_SUCCESS)
+		return _log.fail(EINVAL, "Failed to allocate ODBC Connection: {}", r);
+	_db.reset(hdbc);
+
+	char buf[SQL_MAX_OPTION_STRING_LENGTH];
+	SQLSMALLINT buflen = sizeof(buf);
+	if (auto r = SQLDriverConnect (_db, nullptr, (SQLCHAR *) _settings.data(), _settings.size(),
+                               (SQLCHAR *) buf, sizeof(buf), &buflen, SQL_DRIVER_NOPROMPT); r != SQL_SUCCESS) {
+		return _log.fail(EINVAL, "Failed to connect to {}", _settings);
+	}
+	_log.info("Connection string: {}", buf); //std::string_view(buf, buflen));
+
+	for (auto & m : tll::util::list_wrap(_scheme->messages)) {
+		if (m.msgid == 0) {
+			_log.debug("Message {} has no msgid, skip table check", m.name);
+			continue;
+		}
+
+		auto table = tll::getter::get(m.options, "sql.table").value_or(std::string_view(m.name));
+
+		if (internal.caps & caps::Output) {
+			if (_create_table(table, &m))
+				return _log.fail(EINVAL, "Failed to create table '{}' for '{}'", table, m.name);
+			if (_create_insert(table, &m))
+				return _log.fail(EINVAL, "Failed to prepare SQL statement for '{}'", m.name);
+		} else {
+			if (_create_select(table, &m))
+				return _log.fail(EINVAL, "Failed to prepare SQL statement for '{}'", m.name);
+			auto table_name = s.get("table");
+			//_update_dcaps(dcaps::Process | dcaps::Pending);
+		}
+	}
+
+	if (internal.caps & caps::Input) {
+		auto strings = 0u;
+		for (auto & [_, m] : _messages) {
+			auto i = 0u;
+			for (auto & f : tll::util::list_wrap(m.message->fields)) {
+				if (is_offset_string(&f))
+					i++;
+			}
+			strings = std::max(strings, i);
+		}
+		_log.info("Need {} string buffers", strings);
+		string_buffers.resize(strings);
+		for (auto & [_, m] : _messages) {
+			auto i = 0u, j = 1u;
+			for (auto & f : tll::util::list_wrap(m.message->fields)) {
+				j++;
+				if (is_offset_string(&f)) {
+					string_buffers[i].resize(1024);
+					m.convert[j].c = string_buffers[i].data();
+					//_log.debug("Bind field {} to buffer {} (index {}): {}", f.name, i, j, (void *) m.convert[j].c);
+					i++;
+				}
+			}
+		}
+	}
+
+	return 0;
+}
+
+int ODBC::_close()
+{
+	_messages.clear();
+	if (_db.ptr)
+		SQLDisconnect(_db);
+	_db.reset();
+	_env.reset();
+	return Base::_close();
 }
 
 int ODBC::_create_table(std::string_view table, const tll::scheme::Message * msg)
@@ -329,7 +438,7 @@ int ODBC::_create_table(std::string_view table, const tll::scheme::Message * msg
 	return 0;
 }
 
-int ODBC::_create_statement(std::string_view table, const tll::scheme::Message *msg)
+int ODBC::_create_insert(std::string_view table, const tll::scheme::Message *msg)
 {
 	std::list<std::string> names;
 	names.push_back("`_tll_seq`");
@@ -339,19 +448,50 @@ int ODBC::_create_statement(std::string_view table, const tll::scheme::Message *
 	std::string_view operation = "INSERT";
 	//if (_replace)
 	//	operation = "REPLACE";
-	auto insert = fmt::format("{} INTO `{}`({}) VALUES ", operation, table, join(names.begin(), names.end()));
+	auto query = fmt::format("{} INTO `{}`({}) VALUES ", operation, table, join(names.begin(), names.end()));
 	for (auto & i : names)
 		i = "?";
-	insert += fmt::format("({})", join(names.begin(), names.end()));
+	query += fmt::format("({})", join(names.begin(), names.end()));
 
 	query_ptr_t sql;
 
-	sql.reset(_prepare(insert));
+	sql.reset(_prepare(query));
 	if (!sql)
-		return _log.fail(EINVAL, "Failed to prepare insert statement for table {}: {}", table, insert);
+		return _log.fail(EINVAL, "Failed to prepare insert statement for table {}: {}", table, query);
 
-	auto it = _messages.emplace(msg->msgid, std::make_pair(msg, std::move(sql))).first;
-	it->second.second.param.resize(names.size() + 1);
+	auto it = _messages.emplace(msg->msgid, std::move(sql)).first;
+	it->second.message = msg;
+	it->second.param.resize(names.size() + 1);
+	it->second.convert.resize(names.size() + 1);
+
+	return 0;
+}
+
+int ODBC::_create_select(std::string_view table, const tll::scheme::Message *msg)
+{
+	std::list<std::string> names;
+	names.push_back("`_tll_seq`");
+	for (auto & f : tll::util::list_wrap(msg->fields))
+		names.push_back(fmt::format("`{}`", f.name));
+
+	std::string_view operation = "SELECT";
+	//if (_replace)
+	//	operation = "REPLACE";
+	auto query = fmt::format("{} {} FROM {}", operation, join(names.begin(), names.end()), table);
+	//for (auto & i : names)
+	//	i = "?";
+	//insert += fmt::format("({})", join(names.begin(), names.end()));
+
+	query_ptr_t sql;
+
+	sql.reset(_prepare(query));
+	if (!sql)
+		return _log.fail(EINVAL, "Failed to prepare select statement for table {}: {}", table, query);
+
+	auto it = _messages.emplace(msg->msgid, std::move(sql)).first;
+	it->second.message = msg;
+	it->second.param.resize(names.size() + 1);
+	it->second.convert.resize(names.size() + 1);
 
 	return 0;
 }
@@ -374,15 +514,18 @@ int ODBC::_create_index(const std::string_view &name, std::string_view key, bool
 
 int ODBC::_post(const tll_msg_t *msg, int flags)
 {
-	if (msg->type != TLL_MESSAGE_DATA)
+	if (msg->type != TLL_MESSAGE_DATA) {
+		if (msg->type == TLL_MESSAGE_CONTROL)
+			return _post_control(msg, flags);
 		return 0;
+	}
 
 	if (msg->msgid == 0)
 		return _log.fail(EINVAL, "Unable to insert message without msgid");
 	auto it = _messages.find(msg->msgid);
 	if (it == _messages.end())
 		return _log.fail(ENOENT, "Message {} not found", msg->msgid);
-	auto & [message, insert] = it->second;
+	auto & insert = it->second;
 
 	SQLFreeStmt(insert.sql, SQL_RESET_PARAMS);
 
@@ -391,7 +534,7 @@ int ODBC::_post(const tll_msg_t *msg, int flags)
 	int idx = 1;
 	if (auto r = SQLBindParam(insert.sql, idx++, SQL_C_SBIGINT, SQL_BIGINT, 0, 0, (SQLPOINTER) &msg->seq, &insert.param[0]); r != SQL_SUCCESS)
 		return _log.fail(EINVAL, "Failed to bind seq: {}", r);
-	for (auto & f : tll::util::list_wrap(message->fields)) {
+	for (auto & f : tll::util::list_wrap(insert.message->fields)) {
 		if (sql_bind(insert.sql, insert.param, idx++, &f, view.view(f.offset)))
 			return _log.fail(EINVAL, "Failed to bind field {}", f.name);
 	}
@@ -400,6 +543,107 @@ int ODBC::_post(const tll_msg_t *msg, int flags)
 			return _log.fail(EINVAL, "Failed to insert: SQL_NEED_DATA");
 		return _log.fail(EINVAL, "Failed to insert data: {}", r);
 	}
+	return 0;
+}
+
+int ODBC::_post_control(const tll_msg_t *msg, int flags)
+{
+	if (internal.caps & caps::Output) {
+		// Handle begin/commit/rollback
+		return 0;
+	}
+
+	if (msg->msgid != odbc_scheme::Query::meta_id())
+		return _log.fail(EINVAL, "Invalid control message id: {}", msg->msgid);
+	if (internal.dcaps && dcaps::Process)
+		return _log.fail(EINVAL, "Previous query is not finished, can not start new");
+
+	auto query = odbc_scheme::Query::bind(*msg);
+
+	auto it = _messages.find(query.get_message());
+	if (it == _messages.end())
+		return _log.fail(ENOENT, "Message {} not found in scheme", query.get_message());
+	auto & select = it->second;
+
+	SQLFreeStmt(select.sql, SQL_RESET_PARAMS);
+
+	if (auto r = SQLExecute(select.sql); r != SQL_SUCCESS) {
+		if (r == SQL_NEED_DATA)
+			return _log.fail(EINVAL, "Failed to select data: SQL_NEED_DATA");
+		return _log.fail(EINVAL, "Failed to select data: {}", r);
+	}
+
+	_select = &select;
+
+	auto view = tll::make_view(_buf);
+	_buf.resize(select.message->size);
+
+	int idx = 1;
+	if (auto r = SQLBindCol(select.sql, idx++, SQL_C_SBIGINT, &select.convert[0].i, sizeof(int64_t), &select.param[0]); r != SQL_SUCCESS)
+		return _log.fail(EINVAL, "Failed to bind seq column: {}", r);
+	for (auto & f : tll::util::list_wrap(select.message->fields)) {
+		if (sql_column(select.sql, select, idx++, &f, view.view(f.offset)))
+			return _log.fail(EINVAL, "Failed to bind field {} column", f.name);
+	}
+
+	_update_dcaps(dcaps::Process | dcaps::Pending);
+	return 0;
+}
+
+int ODBC::_process(long timeout, int flags)
+{
+	if (!_select)
+		return _log.fail(EINVAL, "No active select statement");
+
+	auto r = SQLFetch(_select->sql);
+	if (r != SQL_SUCCESS && r != SQL_SUCCESS_WITH_INFO) {
+		_select = nullptr;
+		if (r == SQL_NO_DATA) {
+			_log.debug("End of data");
+			_update_dcaps(0, dcaps::Process | dcaps::Pending);
+			return 0;
+		}
+		return _log.fail(EINVAL, "Failed to fetch data: {}", r);
+	}
+
+	auto view = tll::make_view(_buf);
+
+	auto i = 1u;
+	for (auto & f : tll::util::list_wrap(_select->message->fields)) {
+		i++;
+		if (!is_offset_string(&f))
+			continue;
+		_log.debug("String: {}[{}] (index {})", _select->convert[i].c, _select->param[i], i);
+
+		auto size = _select->param[i];
+		auto data = view.view(f.offset);
+
+		tll::scheme::generic_offset_ptr_t ptr = {};
+		ptr.offset = data.size();
+		if (size == 0) {
+			ptr.offset = 0;
+			ptr.size = 0;
+			ptr.entity = 0;
+			tll::scheme::write_pointer(&f, data, ptr);
+			continue;
+		}
+
+		ptr.size = size + 1;
+		ptr.entity = 1;
+		tll::scheme::write_pointer(&f, data, ptr);
+		auto fview = data.view(ptr.offset);
+		fview.resize(ptr.size);
+		memcpy(fview.data(), _select->convert[i].c, size);
+		*view.view(size).template dataT<char>() = '\0';
+	}
+
+	tll_msg_t msg = {};
+	msg.msgid = _select->message->msgid;
+	msg.seq = _select->convert[0].i;
+	msg.data = _buf.data();
+	msg.size = _buf.size();
+
+	_callback_data(&msg);
 	return 0;
 }
 
