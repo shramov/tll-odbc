@@ -53,18 +53,18 @@ def test_field(context, odbcini, t, value):
 
     assert s.unpack(s.result[-1]).as_dict() == {'f0': value}
 
-@pytest.mark.parametrize("name,query,result",
-        [('empty', [], list(range(10))),
-        ('f0_eq_1000', [{'field': 'f0', 'op': 'EQ', 'value': {'i': 1000}}], [1]),
-        ('f0_lt_1000', [{'field': 'f0', 'op': 'LT', 'value': {'i': 1000}}], [0]),
-        ('f0_le_1000', [{'field': 'f0', 'op': 'LE', 'value': {'i': 1000}}], [0, 1]),
-        ('f0_gt_8000', [{'field': 'f0', 'op': 'GT', 'value': {'i': 8000}}], [9]),
-        ('f0_ge_8000', [{'field': 'f0', 'op': 'GE', 'value': {'i': 8000}}], [8, 9]),
-        ('f0_gt_1000_and_f1_le_500', [{'field': 'f0', 'op': 'GT', 'value': {'i': 1000}}, {'field': 'f1', 'op': 'LE', 'value': {'f': 500}}], [2, 3, 4]),
-        ('f0_gt_5000_and_f1_le_500', [{'field': 'f0', 'op': 'GT', 'value': {'i': 5000}}, {'field': 'f1', 'op': 'LE', 'value': {'f': 500}}], []),
-        ('f2_eq_2', [{'field': 'f2', 'op': 'EQ', 'value': {'s': '2'}}], [2]),
+@pytest.mark.parametrize("query,result",
+        [([], list(range(10))),
+        ([{'field': 'f0', 'op': 'EQ', 'value': {'i': 1000}}], [1]),
+        ([{'field': 'f0', 'op': 'LT', 'value': {'i': 1000}}], [0]),
+        ([{'field': 'f0', 'op': 'LE', 'value': {'i': 1000}}], [0, 1]),
+        ([{'field': 'f0', 'op': 'GT', 'value': {'i': 8000}}], [9]),
+        ([{'field': 'f0', 'op': 'GE', 'value': {'i': 8000}}], [8, 9]),
+        ([{'field': 'f0', 'op': 'GT', 'value': {'i': 1000}}, {'field': 'f1', 'op': 'LE', 'value': {'f': 500}}], [2, 3, 4]),
+        ([{'field': 'f0', 'op': 'GT', 'value': {'i': 5000}}, {'field': 'f1', 'op': 'LE', 'value': {'f': 500}}], []),
+        ([{'field': 'f2', 'op': 'EQ', 'value': {'s': '2'}}], [2]),
         ])
-def test_query(context, odbcini, name, query, result):
+def test_query(context, odbcini, query, result):
     scheme = '''yamls://
     - name: Query
       id: 10
