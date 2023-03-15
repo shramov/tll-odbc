@@ -80,7 +80,7 @@ def test_query(context, odbcini, query, result):
     db = sqlite3.connect(odbcini['db'])
     if list(db.cursor().execute(f'SELECT * FROM `Query`')) == []:
         for x in range(10):
-            i.post({'f0': 1000 * x, 'f1': 100.1 * x, 'f2': str(x)}, name=f'Query', seq=x)
+            i.post({'f0': 1000 * x, 'f1': 100.5 * x, 'f2': str(x)}, name=f'Query', seq=x)
 
     s = Accum('odbc://testdb;name=select', scheme=scheme, dump='scheme', context=context)
     s.open()
@@ -90,3 +90,5 @@ def test_query(context, odbcini, query, result):
         s.process()
 
     assert [(m.type, m.msgid, m.seq) for m in s.result] == [(s.Type.Data, 10, x) for x in result]
+    for m, r in zip(s.result, result):
+        assert s.unpack(m).as_dict() == {'f0': 1000 * r, 'f1': 100.5 * r, 'f2': str(r)}
