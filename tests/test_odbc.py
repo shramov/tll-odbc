@@ -52,3 +52,41 @@ def test_field(context, odbcini, t, value):
     assert [(m.type, m.msgid, m.seq) for m in s.result] == [(s.Type.Data, 10, 100)]
 
     assert s.unpack(s.result[-1]).as_dict() == {'f0': value}
+
+@pytest.mark.parametrize("name,query,result",
+        [('empty', [], list(range(10))),
+        ('f0_eq_1000', [{'field': 'f0', 'op': 'EQ', 'value': {'i': 1000}}], [1]),
+        ('f0_lt_1000', [{'field': 'f0', 'op': 'LT', 'value': {'i': 1000}}], [0]),
+        ('f0_le_1000', [{'field': 'f0', 'op': 'LE', 'value': {'i': 1000}}], [0, 1]),
+        ('f0_gt_8000', [{'field': 'f0', 'op': 'GT', 'value': {'i': 8000}}], [9]),
+        ('f0_ge_8000', [{'field': 'f0', 'op': 'GE', 'value': {'i': 8000}}], [8, 9]),
+        ('f0_gt_1000_and_f1_le_500', [{'field': 'f0', 'op': 'GT', 'value': {'i': 1000}}, {'field': 'f1', 'op': 'LE', 'value': {'f': 500}}], [2, 3, 4]),
+        ('f0_gt_5000_and_f1_le_500', [{'field': 'f0', 'op': 'GT', 'value': {'i': 5000}}, {'field': 'f1', 'op': 'LE', 'value': {'f': 500}}], []),
+        ('f2_eq_2', [{'field': 'f2', 'op': 'EQ', 'value': {'s': '2'}}], [2]),
+        ])
+def test_query(context, odbcini, name, query, result):
+    scheme = '''yamls://
+    - name: Query
+      id: 10
+      fields:
+        - {name: f0, type: int64}
+        - {name: f1, type: double}
+        - {name: f2, type: string}
+    '''
+
+    i = context.Channel('odbc://testdb;name=insert', scheme=scheme, dir='w')
+    i.open()
+
+    db = sqlite3.connect(odbcini['db'])
+    if list(db.cursor().execute(f'SELECT * FROM `Query`')) == []:
+        for x in range(10):
+            i.post({'f0': 1000 * x, 'f1': 100.1 * x, 'f2': str(x)}, name=f'Query', seq=x)
+
+    s = Accum('odbc://testdb;name=select', scheme=scheme, dump='scheme', context=context)
+    s.open()
+    s.post({'message': 10, 'expression': query}, name='Query', type=s.Type.Control)
+
+    for _ in range(100):
+        s.process()
+
+    assert [(m.type, m.msgid, m.seq) for m in s.result] == [(s.Type.Data, 10, x) for x in result]
