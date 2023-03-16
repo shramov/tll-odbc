@@ -3,6 +3,7 @@
 
 import pytest
 
+from decimal import Decimal
 import pyodbc
 
 from tll.test_util import Accum
@@ -25,10 +26,14 @@ SCHEME = '''yamls://
         ('uint16', 54321),
         ('uint32', 2345678901),
         ('double', 123.123),
+        ('decimal128', Decimal('123.456')),
         ('string', 'string'),
         ('byte32, options.type: string', 'string'),
         ])
 def test_field(context, odbcini, t, value):
+    if odbcini.get('driver', '') == 'SQLite3' and t == 'decimal128':
+        pytest.skip("Decimal128 not supported on SQLite3")
+
     dbname = "Data"
     scheme = f'''yamls://
     - name: {dbname}

@@ -4,6 +4,7 @@
 #include <tll/scheme/util.h>
 #include <tll/util/listiter.h>
 #include <tll/util/memoryview.h>
+#include <tll/util/decimal128.h>
 
 #include <sql.h>
 #include <sqlext.h>
@@ -42,22 +43,21 @@ struct Prepared
 	Prepared(query_ptr_t && ptr) : sql(std::move(ptr)) {}
 	query_ptr_t sql;
 	const tll::scheme::Message * message = nullptr;
-	std::vector<SQLLEN> param;
-	union Convert {
-		int64_t i;
-		double d;
-		char * c;
+
+	struct Convert {
+		enum Type { None, ByteString, String, Numeric } type = None;
+		const tll::scheme::Field * field;
+		SQLLEN param;
+		union {
+			int64_t integer;
+			char * string;
+			SQL_NUMERIC_STRUCT numeric;
+		};
 	};
 	std::vector<Convert> convert;
 };
 
 namespace {
-bool is_offset_string(const tll::scheme::Field * f)
-{
-	using tll::scheme::Field;
-	return f->type == Field::Pointer && f->type_ptr->type == Field::Int8 && f->sub_type == Field::ByteString;
-}
-
 template <typename Iter>
 std::string join(std::string_view sep, const Iter &begin, const Iter &end)
 {
@@ -98,7 +98,7 @@ tll::result_t<std::string> sql_type(const tll::scheme::Field *field)
 		return "REAL";
 
 	case Field::Decimal128:
-		return tll::error("Decimal128 not supported yet");
+		return "NUMERIC";
 
 	case Field::Bytes:
 		if (field->sub_type == Field::ByteString)
@@ -121,37 +121,61 @@ tll::result_t<std::string> sql_type(const tll::scheme::Field *field)
 }
 
 template <typename Buf>
-int sql_bind(SQLHSTMT sql, std::vector<SQLLEN> &param, int idx, const tll::scheme::Field *field, const Buf &data)
+int sql_bind(SQLHSTMT sql, Prepared::Convert &convert, int idx, const tll::scheme::Field *field, const Buf &data)
 {
 	using tll::scheme::Field;
 	switch (field->type) {
 	case Field::Int8:
-		return SQLBindParam(sql, idx, SQL_C_STINYINT, SQL_SMALLINT, 0, 0, (SQLPOINTER) data.data(), &param[idx]);
+		return SQLBindParam(sql, idx, SQL_C_STINYINT, SQL_SMALLINT, 0, 0, (SQLPOINTER) data.data(), &convert.param);
 	case Field::Int16:
-		return SQLBindParam(sql, idx, SQL_C_SSHORT, SQL_INTEGER, 0, 0, (SQLPOINTER) data.data(), &param[idx]);
+		return SQLBindParam(sql, idx, SQL_C_SSHORT, SQL_INTEGER, 0, 0, (SQLPOINTER) data.data(), &convert.param);
 	case Field::Int32:
-		return SQLBindParam(sql, idx, SQL_C_SLONG, SQL_INTEGER, 0, 0, (SQLPOINTER) data.data(), &param[idx]);
+		return SQLBindParam(sql, idx, SQL_C_SLONG, SQL_INTEGER, 0, 0, (SQLPOINTER) data.data(), &convert.param);
 	case Field::Int64:
-		return SQLBindParam(sql, idx, SQL_C_SBIGINT, SQL_BIGINT, 0, 0, (SQLPOINTER) data.data(), &param[idx]);
+		return SQLBindParam(sql, idx, SQL_C_SBIGINT, SQL_BIGINT, 0, 0, (SQLPOINTER) data.data(), &convert.param);
 	case Field::UInt8:
-		return SQLBindParam(sql, idx, SQL_C_UTINYINT, SQL_SMALLINT, 0, 0, (SQLPOINTER) data.data(), &param[idx]);
+		return SQLBindParam(sql, idx, SQL_C_UTINYINT, SQL_SMALLINT, 0, 0, (SQLPOINTER) data.data(), &convert.param);
 	case Field::UInt16:
-		return SQLBindParam(sql, idx, SQL_C_USHORT, SQL_INTEGER, 0, 0, (SQLPOINTER) data.data(), &param[idx]);
+		return SQLBindParam(sql, idx, SQL_C_USHORT, SQL_INTEGER, 0, 0, (SQLPOINTER) data.data(), &convert.param);
 	case Field::UInt32:
-		return SQLBindParam(sql, idx, SQL_C_ULONG, SQL_BIGINT, 0, 0, (SQLPOINTER) data.data(), &param[idx]);
+		return SQLBindParam(sql, idx, SQL_C_ULONG, SQL_BIGINT, 0, 0, (SQLPOINTER) data.data(), &convert.param);
 
 	case Field::Double:
-		return SQLBindParam(sql, idx, SQL_C_DOUBLE, SQL_DOUBLE, 0, 0, (SQLPOINTER) data.data(), &param[idx]);
+		return SQLBindParam(sql, idx, SQL_C_DOUBLE, SQL_DOUBLE, 0, 0, (SQLPOINTER) data.data(), &convert.param);
 
 	case Field::UInt64:
-	case Field::Decimal128:
 		return SQL_ERROR;
+
+	case Field::Decimal128: {
+		auto & n = convert.numeric;
+		tll::util::Decimal128::Unpacked u128;
+		data.template dataT<tll::util::Decimal128>()->unpack(u128);
+
+		fmt::print("Sign: {}, Exponent: {}\n", u128.sign, u128.exponent);
+		memcpy(n.val, &u128.mantissa, sizeof(u128.mantissa));
+		n.precision = 34;
+		n.scale = -u128.exponent;
+		n.sign = u128.sign ? 0 : 1;
+		convert.param = sizeof(n);
+		if (auto r = SQLBindParam(sql, idx, SQL_C_NUMERIC, SQL_NUMERIC, n.precision, n.scale, &n, &convert.param))
+			return r;
+
+		SQLHDESC desc = nullptr;
+		const intptr_t scale = n.scale;
+		const intptr_t precision = n.precision;
+		SQLGetStmtAttr(sql, SQL_ATTR_APP_PARAM_DESC, &desc, 0, NULL);
+		SQLSetDescField(desc, idx, SQL_DESC_TYPE, (SQLPOINTER) SQL_C_NUMERIC, 0);
+		SQLSetDescField(desc, idx, SQL_DESC_PRECISION, (SQLPOINTER) precision, 0);
+		SQLSetDescField(desc, idx, SQL_DESC_SCALE, (SQLPOINTER) scale, 0);
+		SQLSetDescField(desc, idx, SQL_DESC_DATA_PTR, (SQLPOINTER) &n, 0);
+		return 0;
+	}
 
 	case Field::Bytes:
 		if (field->sub_type == Field::ByteString) {
 			auto str = data.template dataT<char>();
-			param[idx] = strnlen(str, field->size);
-			return SQLBindParam(sql, idx, SQL_C_CHAR, SQL_VARCHAR, 0, 0, (SQLPOINTER) str, &param[idx]);
+			convert.param = strnlen(str, field->size);
+			return SQLBindParam(sql, idx, SQL_C_CHAR, SQL_VARCHAR, 0, 0, (SQLPOINTER) str, &convert.param);
 		}
 		return SQL_ERROR;
 
@@ -165,9 +189,9 @@ int sql_bind(SQLHSTMT sql, std::vector<SQLLEN> &param, int idx, const tll::schem
 			if (!ptr)
 				return SQL_ERROR;
 			if (ptr->size == 0)
-				return SQLBindParam(sql, idx, SQL_C_CHAR, SQL_VARCHAR, 0, 0, (SQLPOINTER) "", &param[idx]);
-			param[idx] = ptr->size - 1;
-			return SQLBindParam(sql, idx, SQL_C_CHAR, SQL_VARCHAR, 0, 0, (SQLPOINTER) data.view(ptr->offset).template dataT<char>(), &param[idx]);
+				return SQLBindParam(sql, idx, SQL_C_CHAR, SQL_VARCHAR, 0, 0, (SQLPOINTER) "", &convert.param);
+			convert.param = ptr->size - 1;
+			return SQLBindParam(sql, idx, SQL_C_CHAR, SQL_VARCHAR, 0, 0, (SQLPOINTER) data.view(ptr->offset).template dataT<char>(), &convert.param);
 		}
 		return SQL_ERROR;
 	case Field::Union:
@@ -177,35 +201,36 @@ int sql_bind(SQLHSTMT sql, std::vector<SQLLEN> &param, int idx, const tll::schem
 }
 
 template <typename Buf>
-int sql_column(SQLHSTMT sql, Prepared &prepared, int idx, const tll::scheme::Field *field, Buf data)
+int sql_column(SQLHSTMT sql, Prepared::Convert &convert, int idx, const tll::scheme::Field *field, Buf data)
 {
 	using tll::scheme::Field;
 	switch (field->type) {
 	case Field::Int8:
-		return SQLBindCol(sql, idx, SQL_C_STINYINT, data.data(), sizeof(int8_t), &prepared.param[idx]);
+		return SQLBindCol(sql, idx, SQL_C_STINYINT, data.data(), sizeof(int8_t), &convert.param);
 	case Field::Int16:
-		return SQLBindCol(sql, idx, SQL_C_SSHORT, data.data(), sizeof(int16_t), &prepared.param[idx]);
+		return SQLBindCol(sql, idx, SQL_C_SSHORT, data.data(), sizeof(int16_t), &convert.param);
 	case Field::Int32:
-		return SQLBindCol(sql, idx, SQL_C_SLONG, data.data(), sizeof(int32_t), &prepared.param[idx]);
+		return SQLBindCol(sql, idx, SQL_C_SLONG, data.data(), sizeof(int32_t), &convert.param);
 	case Field::Int64:
-		return SQLBindCol(sql, idx, SQL_C_SBIGINT, data.data(), sizeof(int64_t), &prepared.param[idx]);
+		return SQLBindCol(sql, idx, SQL_C_SBIGINT, data.data(), sizeof(int64_t), &convert.param);
 	case Field::UInt8:
-		return SQLBindCol(sql, idx, SQL_C_UTINYINT, data.data(), sizeof(uint8_t), &prepared.param[idx]);
+		return SQLBindCol(sql, idx, SQL_C_UTINYINT, data.data(), sizeof(uint8_t), &convert.param);
 	case Field::UInt16:
-		return SQLBindCol(sql, idx, SQL_C_USHORT, data.data(), sizeof(uint16_t), &prepared.param[idx]);
+		return SQLBindCol(sql, idx, SQL_C_USHORT, data.data(), sizeof(uint16_t), &convert.param);
 	case Field::UInt32:
-		return SQLBindCol(sql, idx, SQL_C_ULONG, data.data(), sizeof(uint32_t), &prepared.param[idx]);
+		return SQLBindCol(sql, idx, SQL_C_ULONG, data.data(), sizeof(uint32_t), &convert.param);
+	case Field::UInt64:
+		return SQL_ERROR;
 
 	case Field::Double:
-		return SQLBindCol(sql, idx, SQL_C_DOUBLE, data.data(), sizeof(double), &prepared.param[idx]);
+		return SQLBindCol(sql, idx, SQL_C_DOUBLE, data.data(), sizeof(double), &convert.param);
 
-	case Field::UInt64:
 	case Field::Decimal128:
-		return SQL_ERROR;
+		return SQLBindCol(sql, idx, SQL_C_NUMERIC, (SQLPOINTER) &convert.numeric, sizeof(SQL_NUMERIC_STRUCT), &convert.param);
 
 	case Field::Bytes:
 		if (field->sub_type == Field::ByteString) {
-			return SQLBindCol(sql, idx, SQL_C_CHAR, data.data(), field->size, &prepared.param[idx]);
+			return SQLBindCol(sql, idx, SQL_C_CHAR, data.data(), field->size, &convert.param);
 		}
 		return SQL_ERROR;
 
@@ -215,7 +240,7 @@ int sql_column(SQLHSTMT sql, Prepared &prepared, int idx, const tll::scheme::Fie
 		return SQL_ERROR;
 	case Field::Pointer:
 		if (field->type_ptr->type == Field::Int8 && field->sub_type == Field::ByteString) {
-			return SQLBindCol(sql, idx, SQL_C_CHAR, prepared.convert[idx].c, 1024, &prepared.param[idx]);
+			return SQLBindCol(sql, idx, SQL_C_CHAR, convert.string, 1024, &convert.param);
 		}
 		return SQL_ERROR;
 	case Field::Union:
@@ -238,10 +263,13 @@ class ODBC : public tll::channel::Base<ODBC>
 
 	std::string _settings;
 	std::vector<char> _buf;
-	std::vector<std::vector<char>> string_buffers;
+	std::list<std::vector<char>> _string_buffers;
 	std::vector<char> _errorbuf;
 
 	std::map<int, Prepared> _messages;
+
+	SQLLEN _seq_param;
+	tll_msg_t _msg = {};
 
 	enum class Index { No, Yes, Unique } _seq_index = Index::Unique;
 
@@ -415,28 +443,25 @@ int ODBC::_open(const ConstConfig &s)
 		}
 	}
 
-	if (internal.caps & caps::Input) {
-		auto strings = 0u;
-		for (auto & [_, m] : _messages) {
-			auto i = 0u;
-			for (auto & f : tll::util::list_wrap(m.message->fields)) {
-				if (is_offset_string(&f))
-					i++;
-			}
-			strings = std::max(strings, i);
-		}
-		_log.info("Need {} string buffers", strings);
-		string_buffers.resize(strings);
-		for (auto & [_, m] : _messages) {
-			auto i = 0u, j = 1u;
-			for (auto & f : tll::util::list_wrap(m.message->fields)) {
-				j++;
-				if (is_offset_string(&f)) {
-					string_buffers[i].resize(1024);
-					m.convert[j].c = string_buffers[i].data();
-					//_log.debug("Bind field {} to buffer {} (index {}): {}", f.name, i, j, (void *) m.convert[j].c);
-					i++;
+	for (auto & [_, m] : _messages) {
+		using tll::scheme::Field;
+		auto ibuf = _string_buffers.begin();
+		auto i = 0;
+		for (auto & f : tll::util::list_wrap(m.message->fields)) {
+			auto & conv = m.convert[i++];
+			conv.field = &f;
+			if (f.type == Field::Pointer && f.type_ptr->type == Field::Int8 && f.sub_type == Field::ByteString) {
+				conv.type = Prepared::Convert::String;
+				if (ibuf == _string_buffers.end()) {
+					_string_buffers.push_back({});
+					ibuf = --_string_buffers.end();
 				}
+				if (internal.caps & caps::Input)
+					ibuf->resize(1024);
+				conv.string = ibuf->data();
+				ibuf++;
+			} else if (f.type == Field::Decimal128) {
+				conv.type = Prepared::Convert::Numeric;
 			}
 		}
 	}
@@ -534,8 +559,7 @@ int ODBC::_create_insert(std::string_view table, const tll::scheme::Message *msg
 
 	auto it = _messages.emplace(msg->msgid, std::move(sql)).first;
 	it->second.message = msg;
-	it->second.param.resize(names.size() + 1);
-	it->second.convert.resize(names.size() + 1);
+	it->second.convert.resize(names.size() - 1);
 
 	return 0;
 }
@@ -563,8 +587,7 @@ int ODBC::_create_select(std::string_view table, const tll::scheme::Message *msg
 
 	auto it = _messages.emplace(msg->msgid, std::move(sql)).first;
 	it->second.message = msg;
-	it->second.param.resize(names.size() + 1);
-	it->second.convert.resize(names.size() + 1);
+	it->second.convert.resize(names.size() - 1);
 
 	return 0;
 }
@@ -605,11 +628,11 @@ int ODBC::_post(const tll_msg_t *msg, int flags)
 	auto view = tll::make_view(*msg);
 
 	int idx = 1;
-	if (auto r = SQLBindParam(insert.sql, idx++, SQL_C_SBIGINT, SQL_BIGINT, 0, 0, (SQLPOINTER) &msg->seq, &insert.param[0]); r != SQL_SUCCESS)
+	if (auto r = SQLBindParam(insert.sql, idx++, SQL_C_SBIGINT, SQL_BIGINT, 0, 0, (SQLPOINTER) &msg->seq, &_seq_param); r != SQL_SUCCESS)
 		return _log.fail(EINVAL, "Failed to bind seq: {}", odbcerror(insert.sql));
-	for (auto & f : tll::util::list_wrap(insert.message->fields)) {
-		if (sql_bind(insert.sql, insert.param, idx++, &f, view.view(f.offset)))
-			return _log.fail(EINVAL, "Failed to bind field {}", f.name);
+	for (auto & c : insert.convert) {
+		if (sql_bind(insert.sql, c, idx++, c.field, view.view(c.field->offset)))
+			return _log.fail(EINVAL, "Failed to bind field {}: {}", c.field->name, odbcerror(insert.sql));
 	}
 	if (auto r = SQLExecute(insert.sql); r != SQL_SUCCESS) {
 		if (r == SQL_NEED_DATA)
@@ -720,11 +743,11 @@ int ODBC::_post_control(const tll_msg_t *msg, int flags)
 	_buf.reserve(65536);
 
 	idx = 1;
-	if (auto r = SQLBindCol(_select_sql, idx++, SQL_C_SBIGINT, &select.convert[0].i, sizeof(int64_t), &select.param[0]); r != SQL_SUCCESS)
+	if (auto r = SQLBindCol(_select_sql, idx++, SQL_C_SBIGINT, &_msg.seq, sizeof(_msg.seq), &_seq_param); r != SQL_SUCCESS)
 		return _log.fail(EINVAL, "Failed to bind seq column: {}", odbcerror(_select_sql));
-	for (auto & f : tll::util::list_wrap(select.message->fields)) {
-		if (sql_column(_select_sql, select, idx++, &f, view.view(f.offset)))
-			return _log.fail(EINVAL, "Failed to bind field {} column", f.name);
+	for (auto & c : select.convert) {
+		if (sql_column(_select_sql, c, idx++, c.field, view.view(c.field->offset)))
+			return _log.fail(EINVAL, "Failed to bind field {} column: {}", c.field->name, odbcerror(_select_sql));
 	}
 
 	_update_dcaps(dcaps::Process | dcaps::Pending);
@@ -752,42 +775,50 @@ int ODBC::_process(long timeout, int flags)
 	_buf.resize(_select->message->size);
 
 	auto i = 1u;
-	for (auto & f : tll::util::list_wrap(_select->message->fields)) {
+	for (auto & c : _select->convert) {
 		i++;
-		_log.debug("Field {}, param: {}", f.name, _select->param[i]);
-		if (!is_offset_string(&f))
+		if (c.type == Prepared::Convert::None)
 			continue;
-		_log.debug("String: {}[{}] (index {})", _select->convert[i].c, _select->param[i], i);
+		auto data = view.view(c.field->offset);
+		if (c.type == Prepared::Convert::String) {
+			auto size = c.param;
 
-		auto size = _select->param[i];
-		auto data = view.view(f.offset);
+			tll::scheme::generic_offset_ptr_t ptr = {};
+			ptr.offset = data.size();
+			if (size == 0) {
+				ptr.offset = 0;
+				ptr.size = 0;
+				ptr.entity = 0;
+				tll::scheme::write_pointer(c.field, data, ptr);
+				continue;
+			}
 
-		tll::scheme::generic_offset_ptr_t ptr = {};
-		ptr.offset = data.size();
-		if (size == 0) {
-			ptr.offset = 0;
-			ptr.size = 0;
-			ptr.entity = 0;
-			tll::scheme::write_pointer(&f, data, ptr);
-			continue;
+			ptr.size = size + 1;
+			ptr.entity = 1;
+			tll::scheme::write_pointer(c.field, data, ptr);
+			auto fview = data.view(ptr.offset);
+			fview.resize(ptr.size);
+			memcpy(fview.data(), c.string, size);
+			*fview.view(size).template dataT<char>() = '\0';
+		} else if (c.type == Prepared::Convert::Numeric) {
+			auto & n = c.numeric;
+			tll::util::Decimal128::Unpacked u128;
+			u128.exponent = -n.scale;
+			u128.sign = n.sign ? 0 : 1;
+			for (auto i = 0u; i < sizeof(n.val); i++)
+				_log.debug("val[{}] == {}", i, n.val[i]);
+			memcpy(&u128.mantissa, n.val, sizeof(u128.mantissa));
+
+			_log.debug("Decimal: sign {}, prec {}, scale {} {} {} ", n.sign, n.precision, n.scale, u128.mantissa.hi, u128.mantissa.lo);
+			data.dataT<tll::util::Decimal128>()->pack(u128);
 		}
-
-		ptr.size = size + 1;
-		ptr.entity = 1;
-		tll::scheme::write_pointer(&f, data, ptr);
-		auto fview = data.view(ptr.offset);
-		fview.resize(ptr.size);
-		memcpy(fview.data(), _select->convert[i].c, size);
-		*fview.view(size).template dataT<char>() = '\0';
 	}
 
-	tll_msg_t msg = {};
-	msg.msgid = _select->message->msgid;
-	msg.seq = _select->convert[0].i;
-	msg.data = _buf.data();
-	msg.size = _buf.size();
+	_msg.msgid = _select->message->msgid;
+	_msg.data = _buf.data();
+	_msg.size = _buf.size();
 
-	_callback_data(&msg);
+	_callback_data(&_msg);
 	return 0;
 }
 
