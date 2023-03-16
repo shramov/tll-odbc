@@ -20,7 +20,7 @@ jobs:
         sudo wget -O/etc/apt/trusted.gpg.d/psha.org.ru.gpg https://psha.org.ru/debian/pubkey.gpg
         sudo apt update
     - name: install deps
-      run: sudo apt install ccache cmake meson pkg-config libfmt-dev libtll-dev python3-pytest python3-decorator python3-tll unixodbc-dev libsqliteodbc
+      run: sudo apt install ccache cmake meson pkg-config libfmt-dev libtll-dev python3-pytest python3-decorator python3-tll unixodbc-dev libsqliteodbc python3-pyodbc
     - name: configure
       run: meson build
     - name: build
