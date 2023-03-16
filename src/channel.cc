@@ -299,6 +299,8 @@ class ODBC : public tll::channel::Base<ODBC>
 			}
 			if (r != SQL_SUCCESS && r != SQL_SUCCESS_WITH_INFO)
 				break;
+			if (len == 0) // Postgres return empty error message instead of non-success error code
+				break;
 			view.dataT<char>()[0] = '\n';
 			view.dataT<char>()[6] = ':';
 			view.dataT<char>()[7] = ' ';
