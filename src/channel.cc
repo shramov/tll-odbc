@@ -554,7 +554,7 @@ std::string_view operator_to_string(odbc_scheme::Expression::Operator op)
 {
 	using O = odbc_scheme::Expression::Operator;
 	switch (op) {
-	case O::EQ: return "==";
+	case O::EQ: return "=";
 	case O::NE: return "!=";
 	case O::LT: return "<";
 	case O::LE: return "<=";
