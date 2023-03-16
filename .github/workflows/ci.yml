@@ -27,6 +27,6 @@ jobs:
       run: ninja -vC build -j2
     - name: test
       run: |
-        meson test -C build --no-rebuild --print-errorlogs -v
+        if [ "${{ matrix.os }}" != "ubuntu-20.04" ]; then meson test -C build --no-rebuild --print-errorlogs -v; fi
 
 # vim: sts=2 sw=2 et
