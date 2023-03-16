@@ -3,7 +3,7 @@
 
 import pytest
 
-import sqlite3
+import pyodbc
 
 from tll.test_util import Accum
 
@@ -29,21 +29,25 @@ SCHEME = '''yamls://
         ('byte32, options.type: string', 'string'),
         ])
 def test_field(context, odbcini, t, value):
-    dbname = f"Data_{t.split(',')[0]}"
+    dbname = "Data"
     scheme = f'''yamls://
     - name: {dbname}
       id: 10
       fields:
         - {{name: f0, type: {t}}}
     '''
-    i = context.Channel('odbc://;name=insert', scheme=scheme, dir='w', **odbcini)
+
+    db = pyodbc.connect(**odbcini) #{k.split('.')[-1]: v for k,v in odbcini.items()}
+    with db.cursor() as c:
+        c.execute('DROP TABLE IF EXISTS "Data"')
+
+    i = context.Channel('odbc://;name=insert', scheme=scheme, dir='w', dump='scheme', **odbcini)
     i.open()
     i.post({'f0': value}, name=dbname, seq=100)
     #c.post({'f0': value}, name='Data', seq=2)
 
     if t not in ('int8', 'uint32'):
-        db = sqlite3.connect(odbcini['database'])
-        assert list(db.cursor().execute(f'SELECT * FROM `{dbname}`')) == [(100, value)]
+        assert [tuple(r) for r in db.cursor().execute(f'SELECT * FROM "Data"')] == [(100, value)]
 
     s = Accum('odbc://;name=select', scheme=scheme, dump='scheme', context=context, **odbcini)
     s.open()
@@ -75,13 +79,14 @@ def test_query(context, odbcini, query, result):
         - {name: f2, type: string}
     '''
 
+    db = pyodbc.connect(**odbcini) #{k.split('.')[-1]: v for k,v in odbcini.items()}
+    with db.cursor() as c:
+        c.execute(f'DROP TABLE IF EXISTS "Query"')
+
     i = context.Channel('odbc://;name=insert', scheme=scheme, dir='w', **odbcini)
     i.open()
-
-    db = sqlite3.connect(odbcini['database'])
-    if list(db.cursor().execute(f'SELECT * FROM `Query`')) == []:
-        for x in range(10):
-            i.post({'f0': 1000 * x, 'f1': 100.5 * x, 'f2': str(x)}, name=f'Query', seq=x)
+    for x in range(10):
+        i.post({'f0': 1000 * x, 'f1': 100.5 * x, 'f2': str(x)}, name=f'Query', seq=x)
 
     s = Accum('odbc://;name=select', scheme=scheme, dump='scheme', context=context, **odbcini)
     s.open()
