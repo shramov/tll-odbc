@@ -12,29 +12,17 @@ tll.logger.init()
 
 from tll.channel import Context
 
-version = tuple([int(x) for x in pytest.__version__.split('.')[:2]])
-
-if version < (3, 9):
-    @pytest.fixture
-    def tmp_path():
-        with tempfile.TemporaryDirectory() as tmp:
-            yield pathlib.Path(tmp)
-
-@pytest.fixture(scope='session')
-def odbcini(tmp_path_factory):
-    tmp_path = tmp_path_factory.mktemp('odbc')
+@pytest.fixture
+def odbcini(tmp_path):
     db = f'{tmp_path}/test.db'
-    #db = '/tmp/test.db'
-    open(tmp_path / "odbc.ini", "w").write(f"""
-[testdb]
-Description=Test SQLite database
-Driver=SQLite3
-Database={db}
-Trace=Yes
-TraceFile={tmp_path}/sqlite.log
-""")
-    os.environ["ODBCINI"] = str(tmp_path / "odbc.ini")
-    return {'ini': os.environ["ODBCINI"], 'db': db}
+    kw = {
+        'settings.description': 'Test SQLite database',
+        'driver': 'SQLite3',
+        'database': db,
+        'settings.trace': 'Yes',
+        'settings.tracefile': f'{tmp_path}/sqlite.log',
+    }
+    return kw
 
 @pytest.fixture
 def context():

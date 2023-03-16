@@ -278,14 +278,41 @@ class ODBC : public tll::channel::Base<ODBC>
 
 int ODBC::_init(const Channel::Url &url, Channel * master)
 {
+	std::map<std::string, std::string, std::less<>> settings;
 	auto reader = channel_props_reader(url);
-	auto host = url.host();
-	if (!host.size())
-		return _log.fail(EINVAL, "Empty database name");
-	_settings = fmt::format("DSN={}", host);
+	for (auto &k : std::array<std::string_view, 3> { "dsn", "driver", "database"}) {
+		auto v = reader.getT<std::string>(k, "");
+		if (v.size())
+			settings.emplace(k, v);
+	}
 
 	if (!reader)
 		return _log.fail(EINVAL, "Invalid url: {}", reader.error());
+
+	if (auto sub = url.sub("settings"); sub) {
+		for (auto &[k, c] : sub->browse("*")) {
+			auto v = c.get();
+			if (!v || !v->size()) continue;
+			settings.emplace(k, *v);
+		}
+	}
+	if (auto sub = url.sub("odbc.settings"); sub) {
+		for (auto &[k, c] : sub->browse("*")) {
+			auto v = c.get();
+			if (!v || !v->size()) continue;
+			settings.emplace(k, *v);
+		}
+	}
+
+	if (settings.empty())
+		return _log.fail(EINVAL, "No settings for ODBC driver");
+
+	for (auto &[k, v]: settings) {
+		if (_settings.size())
+			_settings += ";";
+		_settings += fmt::format("{}={}", k, v);
+	}
+	_log.info("Connection string: {}", _settings);
 
 	if ((internal.caps & caps::InOut) == 0) // Defaults to input
 		internal.caps |= caps::Input;

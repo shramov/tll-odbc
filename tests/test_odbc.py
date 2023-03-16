@@ -36,7 +36,7 @@ def test_field(context, odbcini, t, value):
       fields:
         - {{name: f0, type: {t}}}
     '''
-    i = context.Channel('odbc://testdb;name=insert', scheme=scheme, dir='w')
+    i = context.Channel('odbc://;name=insert', scheme=scheme, dir='w', **odbcini)
     i.open()
     i.post({'f0': value}, name=dbname, seq=100)
     #c.post({'f0': value}, name='Data', seq=2)
@@ -45,7 +45,7 @@ def test_field(context, odbcini, t, value):
         db = sqlite3.connect(odbcini['database'])
         assert list(db.cursor().execute(f'SELECT * FROM `{dbname}`')) == [(100, value)]
 
-    s = Accum('odbc://testdb;name=select', scheme=scheme, dump='scheme', context=context)
+    s = Accum('odbc://;name=select', scheme=scheme, dump='scheme', context=context, **odbcini)
     s.open()
     s.post({'message': 10}, name='Query', type=i.Type.Control)
 
@@ -75,15 +75,15 @@ def test_query(context, odbcini, query, result):
         - {name: f2, type: string}
     '''
 
-    i = context.Channel('odbc://testdb;name=insert', scheme=scheme, dir='w')
+    i = context.Channel('odbc://;name=insert', scheme=scheme, dir='w', **odbcini)
     i.open()
 
-    db = sqlite3.connect(odbcini['db'])
+    db = sqlite3.connect(odbcini['database'])
     if list(db.cursor().execute(f'SELECT * FROM `Query`')) == []:
         for x in range(10):
             i.post({'f0': 1000 * x, 'f1': 100.5 * x, 'f2': str(x)}, name=f'Query', seq=x)
 
-    s = Accum('odbc://testdb;name=select', scheme=scheme, dump='scheme', context=context)
+    s = Accum('odbc://;name=select', scheme=scheme, dump='scheme', context=context, **odbcini)
     s.open()
     s.post({'message': 10, 'expression': query}, name='Query', type=s.Type.Control)
 
