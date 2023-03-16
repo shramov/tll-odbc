@@ -278,6 +278,9 @@ class ODBC : public tll::channel::Base<ODBC>
 
 int ODBC::_init(const Channel::Url &url, Channel * master)
 {
+	if (!_scheme_url)
+		return _log.fail(EINVAL, "ODBC channel needs scheme");
+
 	std::map<std::string, std::string, std::less<>> settings;
 	auto reader = channel_props_reader(url);
 	for (auto &k : std::array<std::string_view, 3> { "dsn", "driver", "database"}) {
