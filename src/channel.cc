@@ -392,12 +392,12 @@ int ODBC::_create_table(std::string_view table, const tll::scheme::Message * msg
 	_log.info("Create table '{}'", table);
 	std::list<std::string> fields;
 
-	fields.push_back("`_tll_seq` INTEGER");
+	fields.push_back("\"_tll_seq\" INTEGER");
 	for (auto & f : tll::util::list_wrap(msg->fields)) {
 		auto t = sql_type(&f);
 		if (!t)
 			return _log.fail(EINVAL, "Message {} field {}: {}", msg->name, f.name, t.error());
-		fields.push_back(fmt::format("`{}` {} NOT NULL", f.name, *t));
+		fields.push_back(fmt::format("\"{}\" {} NOT NULL", f.name, *t));
 
 		auto pkey = tll::getter::getT(f.options, "sql.primary-key", false);
 		if (f.type == f.Pointer)
@@ -411,7 +411,7 @@ int ODBC::_create_table(std::string_view table, const tll::scheme::Message * msg
 		}
 	}
 
-	sql.reset(_prepare(fmt::format("CREATE TABLE IF NOT EXISTS `{}` ({})", table, join(fields.begin(), fields.end()))));
+	sql.reset(_prepare(fmt::format("CREATE TABLE IF NOT EXISTS \"{}\" ({})", table, join(fields.begin(), fields.end()))));
 	if (!sql)
 		return _log.fail(EINVAL, "Failed to prepare CREATE statement");
 
@@ -444,14 +444,14 @@ int ODBC::_create_table(std::string_view table, const tll::scheme::Message * msg
 int ODBC::_create_insert(std::string_view table, const tll::scheme::Message *msg)
 {
 	std::list<std::string> names;
-	names.push_back("`_tll_seq`");
+	names.push_back("\"_tll_seq\"");
 	for (auto & f : tll::util::list_wrap(msg->fields))
-		names.push_back(fmt::format("`{}`", f.name));
+		names.push_back(fmt::format("\"{}\"", f.name));
 
 	std::string_view operation = "INSERT";
 	//if (_replace)
 	//	operation = "REPLACE";
-	auto query = fmt::format("{} INTO `{}`({}) VALUES ", operation, table, join(names.begin(), names.end()));
+	auto query = fmt::format("{} INTO \"{}\"({}) VALUES ", operation, table, join(names.begin(), names.end()));
 	for (auto & i : names)
 		i = "?";
 	query += fmt::format("({})", join(names.begin(), names.end()));
@@ -473,14 +473,14 @@ int ODBC::_create_insert(std::string_view table, const tll::scheme::Message *msg
 int ODBC::_create_select(std::string_view table, const tll::scheme::Message *msg)
 {
 	std::list<std::string> names;
-	names.push_back("`_tll_seq`");
+	names.push_back("\"_tll_seq\"");
 	for (auto & f : tll::util::list_wrap(msg->fields))
-		names.push_back(fmt::format("`{}`", f.name));
+		names.push_back(fmt::format("\"{}\"", f.name));
 
 	std::string_view operation = "SELECT";
 	//if (_replace)
 	//	operation = "REPLACE";
-	auto query = fmt::format("{} {} FROM {}", operation, join(names.begin(), names.end()), table);
+	auto query = fmt::format("{} {} FROM \"{}\"", operation, join(names.begin(), names.end()), table);
 	//for (auto & i : names)
 	//	i = "?";
 	//insert += fmt::format("({})", join(names.begin(), names.end()));
@@ -505,7 +505,7 @@ int ODBC::_create_index(const std::string_view &name, std::string_view key, bool
 	query_ptr_t sql;
 
 	std::string_view ustr = unique ? "UNIQUE " : "";
-	auto str = fmt::format("CREATE {} INDEX IF NOT EXISTS `_tll_{}_{}` on `{}`(`{}`)", ustr, name, key, name, key);
+	auto str = fmt::format("CREATE {} INDEX IF NOT EXISTS \"_tll_{}_{}\" on \"{}\"(\"{}\")", ustr, name, key, name, key);
 	sql.reset(_prepare(str));
 	if (!sql)
 		return _log.fail(EINVAL, "Failed to prepare index statement: {}", str);
@@ -595,17 +595,17 @@ int ODBC::_post_control(const tll_msg_t *msg, int flags)
 	auto & select = it->second;
 
 	std::list<std::string> names;
-	names.push_back("`_tll_seq`");
+	names.push_back("\"_tll_seq\"");
 	for (auto & f : tll::util::list_wrap(select.message->fields))
-		names.push_back(fmt::format("`{}`", f.name));
+		names.push_back(fmt::format("\"{}\"", f.name));
 	std::list<std::string> where;
 	for (auto & e : query.get_expression()) {
 		if (!lookup(select.message->fields, e.get_field()))
 			return _log.fail(ENOENT, "No such field '{}' in message {}", e.get_field(), select.message->name);
-		where.push_back(fmt::format("`{}` {} ?", e.get_field(), operator_to_string(e.get_op())));
+		where.push_back(fmt::format("\"{}\" {} ?", e.get_field(), operator_to_string(e.get_op())));
 	}
 
-	auto str = fmt::format("SELECT {} FROM {}", join(names.begin(), names.end()), select.message->name);
+	auto str = fmt::format("SELECT {} FROM \"{}\"", join(names.begin(), names.end()), select.message->name);
 	if (where.size())
 		str += std::string(" WHERE ") + join(" AND ", where.begin(), where.end());
 
