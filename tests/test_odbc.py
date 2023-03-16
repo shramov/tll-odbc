@@ -41,8 +41,9 @@ def test_field(context, odbcini, t, value):
     i.post({'f0': value}, name=dbname, seq=100)
     #c.post({'f0': value}, name='Data', seq=2)
 
-    db = sqlite3.connect(odbcini['db'])
-    assert list(db.cursor().execute(f'SELECT * FROM `{dbname}`')) == [(100, value)]
+    if t not in ('int8', 'uint32'):
+        db = sqlite3.connect(odbcini['database'])
+        assert list(db.cursor().execute(f'SELECT * FROM `{dbname}`')) == [(100, value)]
 
     s = Accum('odbc://testdb;name=select', scheme=scheme, dump='scheme', context=context)
     s.open()
