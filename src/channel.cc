@@ -282,9 +282,10 @@ class ODBC : public tll::channel::Base<ODBC>
 		auto view = tll::make_view(_errorbuf);
 
 		for (auto i = 1; ; i++) {
-			if (view.size() < 8)
-				view.resize(8);
-			*view.dataT<char>() = 0;
+			if (view.size() < 9)
+				view.resize(9); // One byte for internal strnlen inside SQLGetDiagRec
+			view.dataT<char>()[0] = 0;
+			view.dataT<char>()[8] = 0;
 			SQLSMALLINT len = 0;
 			SQLINTEGER native;
 			auto sqlstate = view.view(1);
