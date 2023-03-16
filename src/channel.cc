@@ -239,6 +239,7 @@ class ODBC : public tll::channel::Base<ODBC>
 	std::string _settings;
 	std::vector<char> _buf;
 	std::vector<std::vector<char>> string_buffers;
+	std::vector<char> _errorbuf;
 
 	std::map<int, Prepared> _messages;
 
@@ -269,10 +270,45 @@ class ODBC : public tll::channel::Base<ODBC>
 		_log.debug("Prepare SQL statement:\n\t{}", query);
 		query_ptr_t sql;
 		if (auto r = SQLAllocHandle(SQL_HANDLE_STMT, _db, &sql.ptr); r != SQL_SUCCESS)
-			return _log.fail(nullptr, "Failed to allocate statement: {}\n\t{}", r, query);
+			return _log.fail(nullptr, "Failed to allocate statement: {}\n\t{}", odbcerror(_db), query);
 		if (auto r = SQLPrepare(sql, (SQLCHAR *) query.data(), query.size()); r != SQL_SUCCESS)
-			return _log.fail(nullptr, "Failed to prepare statement: {}\n\t{}", r, query);
+			return _log.fail(nullptr, "Failed to prepare statement: {}\n\t{}", odbcerror(sql), query);
 		return sql.release();
+	}
+
+	template <SQLSMALLINT Type>
+	std::string_view odbcerror(const SQLHandle<Type> &handle)
+	{
+		auto view = tll::make_view(_errorbuf);
+
+		for (auto i = 1; ; i++) {
+			if (view.size() < 8)
+				view.resize(8);
+			*view.dataT<char>() = 0;
+			SQLSMALLINT len = 0;
+			SQLINTEGER native;
+			auto sqlstate = view.view(1);
+			auto buf = view.view(1 + 5 + 2); //'\nHYXXX: ' string
+			auto r = SQLGetDiagRec(Type, handle.ptr, i, sqlstate.dataT<SQLCHAR>(), &native, buf.dataT<SQLCHAR>(), buf.size(), &len);
+			if (r != SQL_SUCCESS && r != SQL_SUCCESS_WITH_INFO)
+				break;
+			if (buf.size() < (size_t) len) {
+				buf.resize(len + 1);
+				len = 0;
+				r = SQLGetDiagRec(Type, handle.ptr, i, sqlstate.dataT<SQLCHAR>(), &native, buf.dataT<SQLCHAR>(), buf.size(), &len);
+			}
+			if (r != SQL_SUCCESS && r != SQL_SUCCESS_WITH_INFO)
+				break;
+			view.dataT<char>()[0] = '\n';
+			view.dataT<char>()[6] = ':';
+			view.dataT<char>()[7] = ' ';
+			view = buf.view(len);
+		}
+
+		auto size = view.dataT<char>() - _errorbuf.data();
+		if (size == 0)
+			return "";
+		return std::string_view(_errorbuf.data() + 1, size - 1); // Skip first delimiter
 	}
 };
 
@@ -340,18 +376,18 @@ int ODBC::_open(const ConstConfig &s)
 	_env.reset(henv);
 
         if (auto r = SQLSetEnvAttr(_env, SQL_ATTR_ODBC_VERSION, (SQLPOINTER)SQL_OV_ODBC3, 0); r != SQL_SUCCESS)
-		return _log.fail(EINVAL, "Failed to request ODBCv3: {}", r);
+		return _log.fail(EINVAL, "Failed to request ODBCv3: {}", odbcerror(_env));
 
 	SQLHDBC hdbc = nullptr;
 	if (auto r = SQLAllocHandle(SQL_HANDLE_DBC, _env, &hdbc); r != SQL_SUCCESS)
-		return _log.fail(EINVAL, "Failed to allocate ODBC Connection: {}", r);
+		return _log.fail(EINVAL, "Failed to allocate ODBC Connection: {}", odbcerror(_env));
 	_db.reset(hdbc);
 
 	char buf[SQL_MAX_OPTION_STRING_LENGTH];
 	SQLSMALLINT buflen = sizeof(buf);
 	if (auto r = SQLDriverConnect (_db, nullptr, (SQLCHAR *) _settings.data(), _settings.size(),
                                (SQLCHAR *) buf, sizeof(buf), &buflen, SQL_DRIVER_NOPROMPT); r != SQL_SUCCESS) {
-		return _log.fail(EINVAL, "Failed to connect to {}", _settings);
+		return _log.fail(EINVAL, "Failed to connect: {}\n\tConnection string: {}", odbcerror(_db), _settings);
 	}
 	_log.info("Connection string: {}", buf); //std::string_view(buf, buflen));
 
@@ -446,7 +482,7 @@ int ODBC::_create_table(std::string_view table, const tll::scheme::Message * msg
 		return _log.fail(EINVAL, "Failed to prepare CREATE statement");
 
 	if (auto r = SQLExecute(sql); r != SQL_SUCCESS)
-		return _log.fail(EINVAL, "Failed to create table '{}'", table);
+		return _log.fail(EINVAL, "Failed to create table '{}': {}", table, odbcerror(sql));
 
 	{
 		auto index = tll::getter::getT(msg->options, "sql.index", _seq_index, {{"no", Index::No}, {"yes", Index::Yes}, {"unique", Index::Unique}});
@@ -566,15 +602,15 @@ int ODBC::_post(const tll_msg_t *msg, int flags)
 
 	int idx = 1;
 	if (auto r = SQLBindParam(insert.sql, idx++, SQL_C_SBIGINT, SQL_BIGINT, 0, 0, (SQLPOINTER) &msg->seq, &insert.param[0]); r != SQL_SUCCESS)
-		return _log.fail(EINVAL, "Failed to bind seq: {}", r);
+		return _log.fail(EINVAL, "Failed to bind seq: {}", odbcerror(insert.sql));
 	for (auto & f : tll::util::list_wrap(insert.message->fields)) {
 		if (sql_bind(insert.sql, insert.param, idx++, &f, view.view(f.offset)))
 			return _log.fail(EINVAL, "Failed to bind field {}", f.name);
 	}
 	if (auto r = SQLExecute(insert.sql); r != SQL_SUCCESS) {
 		if (r == SQL_NEED_DATA)
-			return _log.fail(EINVAL, "Failed to insert: SQL_NEED_DATA");
-		return _log.fail(EINVAL, "Failed to insert data: {}", r);
+			return _log.fail(EINVAL, "Failed to insert: SQL_NEED_DATA: {}", odbcerror(insert.sql));
+		return _log.fail(EINVAL, "Failed to insert data: {}", odbcerror(insert.sql));
 	}
 	return 0;
 }
@@ -669,8 +705,8 @@ int ODBC::_post_control(const tll_msg_t *msg, int flags)
 
 	if (auto r = SQLExecute(_select_sql); r != SQL_SUCCESS) {
 		if (r == SQL_NEED_DATA)
-			return _log.fail(EINVAL, "Failed to select data: SQL_NEED_DATA");
-		return _log.fail(EINVAL, "Failed to select data: {}", r);
+			return _log.fail(EINVAL, "Failed to select data: SQL_NEED_DATA: {}", odbcerror(_select_sql));
+		return _log.fail(EINVAL, "Failed to select data: {}", odbcerror(_select_sql));
 	}
 
 	_select = &select;
@@ -681,7 +717,7 @@ int ODBC::_post_control(const tll_msg_t *msg, int flags)
 
 	idx = 1;
 	if (auto r = SQLBindCol(_select_sql, idx++, SQL_C_SBIGINT, &select.convert[0].i, sizeof(int64_t), &select.param[0]); r != SQL_SUCCESS)
-		return _log.fail(EINVAL, "Failed to bind seq column: {}", r);
+		return _log.fail(EINVAL, "Failed to bind seq column: {}", odbcerror(_select_sql));
 	for (auto & f : tll::util::list_wrap(select.message->fields)) {
 		if (sql_column(_select_sql, select, idx++, &f, view.view(f.offset)))
 			return _log.fail(EINVAL, "Failed to bind field {} column", f.name);
@@ -705,7 +741,7 @@ int ODBC::_process(long timeout, int flags)
 			_update_dcaps(0, dcaps::Process | dcaps::Pending);
 			return 0;
 		}
-		return _log.fail(EINVAL, "Failed to fetch data: {}", r);
+		return _log.fail(EINVAL, "Failed to fetch data: {}", odbcerror(_select_sql));
 	}
 
 	auto view = tll::make_view(_buf);
