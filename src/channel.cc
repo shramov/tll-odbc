@@ -121,7 +121,7 @@ tll::result_t<std::string> sql_type(const tll::scheme::Field *field)
 }
 
 template <typename Buf>
-int sql_bind(SQLHSTMT sql, std::vector<SQLLEN> param, int idx, const tll::scheme::Field *field, const Buf &data)
+int sql_bind(SQLHSTMT sql, std::vector<SQLLEN> &param, int idx, const tll::scheme::Field *field, const Buf &data)
 {
 	using tll::scheme::Field;
 	switch (field->type) {
