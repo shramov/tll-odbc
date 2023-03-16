@@ -87,9 +87,10 @@ tll::result_t<std::string> sql_type(const tll::scheme::Field *field)
 	case Field::Int16:
 	case Field::UInt16:
 	case Field::Int32:
+		return "INTEGER";
 	case Field::UInt32:
 	case Field::Int64:
-		return "INTEGER";
+		return "BIGINT";
 	case Field::UInt64:
 		return tll::error("UInt64 not supported");
 
