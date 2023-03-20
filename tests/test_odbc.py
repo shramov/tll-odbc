@@ -46,22 +46,20 @@ def test_field(context, odbcini, t, value):
     with db.cursor() as c:
         c.execute('DROP TABLE IF EXISTS "Data"')
 
-    i = context.Channel('odbc://;name=insert', scheme=scheme, dir='w', dump='scheme', **odbcini)
-    i.open()
-    i.post({'f0': value}, name=dbname, seq=100)
+    c = Accum('odbc://;name=odbc', scheme=scheme, dump='scheme', context=context, **odbcini)
+    c.open()
+    c.post({'f0': value}, name=dbname, seq=100)
     #c.post({'f0': value}, name='Data', seq=2)
 
     if t not in ('int8', 'uint32'):
         assert [tuple(r) for r in db.cursor().execute(f'SELECT * FROM "Data"')] == [(100, value)]
 
-    s = Accum('odbc://;name=select', scheme=scheme, dump='scheme', context=context, **odbcini)
-    s.open()
-    s.post({'message': 10}, name='Query', type=i.Type.Control)
+    c.post({'message': 10}, name='Query', type=c.Type.Control)
 
-    s.process()
-    assert [(m.type, m.msgid, m.seq) for m in s.result] == [(s.Type.Data, 10, 100)]
+    c.process()
+    assert [(m.type, m.msgid, m.seq) for m in c.result] == [(c.Type.Data, 10, 100)]
 
-    assert s.unpack(s.result[-1]).as_dict() == {'f0': value}
+    assert c.unpack(c.result[-1]).as_dict() == {'f0': value}
 
 @pytest.mark.parametrize("query,result",
         [([], list(range(10))),

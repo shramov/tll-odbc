@@ -290,7 +290,6 @@ class ODBC : public tll::channel::Base<ODBC>
  private:
 	int _create_table(std::string_view table, const tll::scheme::Message *);
 	int _create_insert(std::string_view table, const tll::scheme::Message *);
-	int _create_select(std::string_view table, const tll::scheme::Message *);
 	int _create_index(const std::string_view &name, std::string_view key, bool unique);
 
 	SQLHSTMT _prepare(const std::string_view query)
@@ -384,11 +383,6 @@ int ODBC::_init(const Channel::Url &url, Channel * master)
 	}
 	_log.info("Connection string: {}", _settings);
 
-	if ((internal.caps & caps::InOut) == 0) // Defaults to input
-		internal.caps |= caps::Input;
-	if ((internal.caps & caps::InOut) == caps::InOut)
-		return _log.fail(EINVAL, "odbc:// can be either read-only or write-only, need proper dir in parameters");
-
 	_scheme_control.reset(context().scheme_load(odbc_scheme::scheme_string));
 	if (!_scheme_control.get())
 		return _log.fail(EINVAL, "Failed to load odbc control scheme");
@@ -430,17 +424,10 @@ int ODBC::_open(const ConstConfig &s)
 
 		auto table = tll::getter::get(m.options, "sql.table").value_or(std::string_view(m.name));
 
-		if (internal.caps & caps::Output) {
-			if (_create_table(table, &m))
-				return _log.fail(EINVAL, "Failed to create table '{}' for '{}'", table, m.name);
-			if (_create_insert(table, &m))
-				return _log.fail(EINVAL, "Failed to prepare SQL statement for '{}'", m.name);
-		} else {
-			if (_create_select(table, &m))
-				return _log.fail(EINVAL, "Failed to prepare SQL statement for '{}'", m.name);
-			auto table_name = s.get("table");
-			//_update_dcaps(dcaps::Process | dcaps::Pending);
-		}
+		if (_create_table(table, &m))
+			return _log.fail(EINVAL, "Failed to create table '{}' for '{}'", table, m.name);
+		if (_create_insert(table, &m))
+			return _log.fail(EINVAL, "Failed to prepare SQL statement for '{}'", m.name);
 	}
 
 	for (auto & [_, m] : _messages) {
@@ -456,8 +443,7 @@ int ODBC::_open(const ConstConfig &s)
 					_string_buffers.push_back({});
 					ibuf = --_string_buffers.end();
 				}
-				if (internal.caps & caps::Input)
-					ibuf->resize(1024);
+				ibuf->resize(1024);
 				conv.string = ibuf->data();
 				ibuf++;
 			} else if (f.type == Field::Decimal128) {
@@ -564,34 +550,6 @@ int ODBC::_create_insert(std::string_view table, const tll::scheme::Message *msg
 	return 0;
 }
 
-int ODBC::_create_select(std::string_view table, const tll::scheme::Message *msg)
-{
-	std::list<std::string> names;
-	names.push_back("\"_tll_seq\"");
-	for (auto & f : tll::util::list_wrap(msg->fields))
-		names.push_back(fmt::format("\"{}\"", f.name));
-
-	std::string_view operation = "SELECT";
-	//if (_replace)
-	//	operation = "REPLACE";
-	auto query = fmt::format("{} {} FROM \"{}\"", operation, join(names.begin(), names.end()), table);
-	//for (auto & i : names)
-	//	i = "?";
-	//insert += fmt::format("({})", join(names.begin(), names.end()));
-
-	query_ptr_t sql;
-
-	sql.reset(_prepare(query));
-	if (!sql)
-		return _log.fail(EINVAL, "Failed to prepare select statement for table {}: {}", table, query);
-
-	auto it = _messages.emplace(msg->msgid, std::move(sql)).first;
-	it->second.message = msg;
-	it->second.convert.resize(names.size() - 1);
-
-	return 0;
-}
-
 int ODBC::_create_index(const std::string_view &name, std::string_view key, bool unique)
 {
 	_log.debug("Create index for {}: key {}", name, key);
@@ -615,6 +573,9 @@ int ODBC::_post(const tll_msg_t *msg, int flags)
 			return _post_control(msg, flags);
 		return 0;
 	}
+
+	if (_select_sql)
+		return _log.fail(EINVAL, "Previous query is not finished, can not write data");
 
 	if (msg->msgid == 0)
 		return _log.fail(EINVAL, "Unable to insert message without msgid");
@@ -677,7 +638,7 @@ int ODBC::_post_control(const tll_msg_t *msg, int flags)
 
 	if (msg->msgid != odbc_scheme::Query::meta_id())
 		return _log.fail(EINVAL, "Invalid control message id: {}", msg->msgid);
-	if (internal.dcaps && dcaps::Process)
+	if (_select_sql)
 		return _log.fail(EINVAL, "Previous query is not finished, can not start new");
 
 	auto query = odbc_scheme::Query::bind(*msg);
