@@ -101,3 +101,37 @@ def test_query(context, odbcini, query, result):
     assert [(m.type, m.msgid, m.seq) for m in s.result] == [(s.Type.Data, 10, x) for x in result]
     for m, r in zip(s.result, result):
         assert s.unpack(m).as_dict() == {'f0': 1000 * r, 'f1': 100.5 * r, 'f2': str(r)}
+
+def test_function(context, odbcini):
+    scheme = '''yamls://
+    - name: Input
+      options.sql.function: TestFunction
+      options.sql.function-output: Output
+      id: 10
+      fields:
+        - {name: a, type: int32}
+        - {name: b, type: double}
+    - name: Output
+      id: 20
+      fields:
+        - {name: a, type: double}
+        - {name: b, type: int32}
+    '''
+    if odbcini.get('driver', '') == 'SQLite3':
+        pytest.skip("Functions not supported in SQLite3")
+    db = pyodbc.connect(**odbcini) #{k.split('.')[-1]: v for k,v in odbcini.items()}
+    with db.cursor() as c:
+        c.execute(f'DROP FUNCTION IF EXISTS "TestFunction"')
+        c.execute('''
+CREATE FUNCTION "TestFunction" (a INTEGER, b DOUBLE PRECISION) RETURNS TABLE(a DOUBLE PRECISION, b INTEGER)
+AS $$ SELECT b, a $$
+LANGUAGE SQL
+''')
+
+    c = Accum('odbc://;name=select', scheme=scheme, dump='scheme', context=context, **odbcini)
+    c.open()
+    c.post({'a': 10, 'b': 123.45}, name='Input')
+    for _ in range(10):
+        c.process()
+    assert [(m.type, m.msgid) for m in c.result] == [(c.Type.Data, 20)]
+    assert c.unpack(c.result[0]).as_dict() == {'a': 123.45, 'b': 10}
