@@ -273,6 +273,7 @@ class ODBC : public tll::channel::Base<ODBC>
 	tll_msg_t _msg = {};
 
 	enum class Index { No, Yes, Unique } _seq_index = Index::Unique;
+	enum class Create { No, Checked, Always } _create_mode = Create::Checked;
 
  public:
 	static constexpr auto process_policy() { return ProcessPolicy::Custom; }
@@ -292,6 +293,13 @@ class ODBC : public tll::channel::Base<ODBC>
 	int _create_table(std::string_view table, const tll::scheme::Message *);
 	int _create_insert(std::string_view table, const tll::scheme::Message *);
 	int _create_index(const std::string_view &name, std::string_view key, bool unique);
+
+	std::string_view _if_not_exists()
+	{
+		if (_create_mode == Create::Checked)
+			return "IF NOT EXISTS ";
+		return "";
+	}
 
 	query_ptr_t _prepare(const std::string_view query)
 	{
@@ -360,6 +368,7 @@ int ODBC::_init(const Channel::Url &url, Channel * master)
 			settings.emplace(k, v);
 	}
 
+	_create_mode = reader.getT("create-mode", Create::Checked, {{"no", Create::No}, {"checked", Create::Checked}, {"always", Create::Always}});
 	if (!reader)
 		return _log.fail(EINVAL, "Invalid url: {}", reader.error());
 
@@ -503,7 +512,7 @@ int ODBC::_create_table(std::string_view table, const tll::scheme::Message * msg
 		}
 	}
 
-	sql = _prepare(fmt::format("CREATE TABLE IF NOT EXISTS \"{}\" ({})", table, join(fields.begin(), fields.end())));
+	sql = _prepare(fmt::format("CREATE TABLE {}\"{}\" ({})", _if_not_exists(), table, join(fields.begin(), fields.end())));
 	if (!sql)
 		return _log.fail(EINVAL, "Failed to prepare CREATE statement");
 
@@ -589,7 +598,7 @@ int ODBC::_create_index(const std::string_view &name, std::string_view key, bool
 	query_ptr_t sql;
 
 	std::string_view ustr = unique ? "UNIQUE " : "";
-	auto str = fmt::format("CREATE {} INDEX IF NOT EXISTS \"_tll_{}_{}\" on \"{}\"(\"{}\")", ustr, name, key, name, key);
+	auto str = fmt::format("CREATE {} INDEX {}\"_tll_{}_{}\" on \"{}\"(\"{}\")", ustr, _if_not_exists(), name, key, name, key);
 	sql = _prepare(str);
 	if (!sql)
 		return _log.fail(EINVAL, "Failed to prepare index statement: {}", str);
