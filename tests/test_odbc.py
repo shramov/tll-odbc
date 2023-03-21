@@ -46,7 +46,7 @@ def test_field(context, odbcini, t, value):
     with db.cursor() as c:
         c.execute('DROP TABLE IF EXISTS "Data"')
 
-    c = Accum('odbc://;name=odbc', scheme=scheme, dump='scheme', context=context, **odbcini)
+    c = Accum('odbc://;name=odbc', scheme=scheme, dump='scheme', context=context, create='no', **odbcini)
     c.open()
     c.post({'f0': value}, name=dbname, seq=100)
     #c.post({'f0': value}, name='Data', seq=2)
@@ -107,11 +107,13 @@ def test_function(context, odbcini):
     - name: Input
       options.sql.function: TestFunction
       options.sql.function-output: Output
+      options.sql.with-seq: no
       id: 10
       fields:
         - {name: a, type: int32}
         - {name: b, type: double}
     - name: Output
+      options.sql.with-seq: no
       id: 20
       fields:
         - {name: a, type: double}

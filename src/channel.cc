@@ -56,6 +56,7 @@ struct Prepared
 		};
 	};
 	std::vector<Convert> convert;
+	bool with_seq;
 };
 
 namespace {
@@ -493,7 +494,12 @@ int ODBC::_create_table(std::string_view table, const tll::scheme::Message * msg
 	_log.info("Create table '{}'", table);
 	std::list<std::string> fields;
 
-	fields.push_back("\"_tll_seq\" INTEGER");
+	auto with_seq = tll::getter::getT(msg->options, "sql.with-seq", true);
+	if (!with_seq)
+		return _log.fail(EINVAL, "Invalid sql.with-seq option: {}", with_seq.error());
+	if (*with_seq)
+		fields.push_back("\"_tll_seq\" INTEGER");
+
 	for (auto & f : tll::util::list_wrap(msg->fields)) {
 		auto t = sql_type(&f);
 		if (!t)
@@ -523,6 +529,7 @@ int ODBC::_create_table(std::string_view table, const tll::scheme::Message * msg
 		auto index = tll::getter::getT(msg->options, "sql.index", _seq_index, {{"no", Index::No}, {"yes", Index::Yes}, {"unique", Index::Unique}});
 		if (!index) {
 			_log.warning("Invalid sql.index option for {}: {}", msg->name, index.error());
+		} else if (!*with_seq) { // No seq field
 		} else if (*index != Index::No) {
 			if (_create_index(table, "_tll_seq", *index == Index::Unique))
 				return _log.fail(EINVAL, "Failed to create seq index for table {}", table);
@@ -545,7 +552,13 @@ int ODBC::_create_table(std::string_view table, const tll::scheme::Message * msg
 int ODBC::_create_insert(std::string_view table, const tll::scheme::Message *msg)
 {
 	std::list<std::string> names;
-	names.push_back("\"_tll_seq\"");
+
+	auto with_seq = tll::getter::getT(msg->options, "sql.with-seq", true);
+	if (!with_seq)
+		return _log.fail(EINVAL, "Invalid sql.with-seq option: {}", with_seq.error());
+	if (*with_seq)
+		names.push_back("\"_tll_seq\"");
+
 	for (auto & f : tll::util::list_wrap(msg->fields))
 		names.push_back(fmt::format("\"{}\"", f.name));
 
@@ -564,11 +577,9 @@ int ODBC::_create_insert(std::string_view table, const tll::scheme::Message *msg
 		std::list<std::string> outnames;
 		for (auto & f : tll::util::list_wrap(outmsg->fields))
 			outnames.push_back(fmt::format("\"{}\"", f.name));
-		names.pop_front();
 		for (auto & i : names)
 			i = "?";
 		query = fmt::format("SELECT {} FROM \"{}\"({})", join(outnames.begin(), outnames.end()), *function, join(names.begin(), names.end()));
-		names.push_back("");
 	} else {
 		//if (_replace)
 		//	operation = "REPLACE";
@@ -578,16 +589,15 @@ int ODBC::_create_insert(std::string_view table, const tll::scheme::Message *msg
 		query += fmt::format("({})", join(names.begin(), names.end()));
 	}
 
-	query_ptr_t sql;
-
-	sql = _prepare(query);
+	auto sql = _prepare(query);
 	if (!sql)
 		return _log.fail(EINVAL, "Failed to prepare insert statement for table {}: {}", table, query);
 
 	auto it = _messages.emplace(msg->msgid, std::move(sql)).first;
 	it->second.message = msg;
-	it->second.convert.resize(names.size() - 1);
+	it->second.convert.resize(*with_seq ? names.size() - 1 : names.size());
 	it->second.output_message = outmsg;
+	it->second.with_seq = *with_seq;
 
 	return 0;
 }
@@ -631,7 +641,7 @@ int ODBC::_post(const tll_msg_t *msg, int flags)
 	auto view = tll::make_view(*msg);
 
 	int idx = 1;
-	if (!insert.output) {
+	if (insert.with_seq) {
 		if (auto r = SQLBindParam(insert.sql, idx++, SQL_C_SBIGINT, SQL_BIGINT, 0, 0, (SQLPOINTER) &msg->seq, &_seq_param); r != SQL_SUCCESS)
 			return _log.fail(EINVAL, "Failed to bind seq: {}", odbcerror(insert.sql));
 	}
@@ -657,8 +667,10 @@ int ODBC::_post(const tll_msg_t *msg, int flags)
 		_buf.reserve(65536);
 
 		idx = 1;
-		//if (auto r = SQLBindCol(_select_sql, idx++, SQL_C_SBIGINT, &_msg.seq, sizeof(_msg.seq), &_seq_param); r != SQL_SUCCESS)
-		//	return _log.fail(EINVAL, "Failed to bind seq column: {}", odbcerror(_select_sql));
+		if (_select->with_seq) {
+			if (auto r = SQLBindCol(_select_sql, idx++, SQL_C_SBIGINT, &_msg.seq, sizeof(_msg.seq), &_seq_param); r != SQL_SUCCESS)
+				return _log.fail(EINVAL, "Failed to bind seq column: {}", odbcerror(_select_sql));
+		}
 		for (auto & c : _select->convert) {
 			_log.debug("Bind field {} at {}", c.field->name, c.field->offset);
 			if (sql_column(_select_sql, c, idx++, c.field, view.view(c.field->offset)))
@@ -716,7 +728,8 @@ int ODBC::_post_control(const tll_msg_t *msg, int flags)
 	auto & select = it->second;
 
 	std::list<std::string> names;
-	names.push_back("\"_tll_seq\"");
+	if (select.with_seq)
+		names.push_back("\"_tll_seq\"");
 	for (auto & f : tll::util::list_wrap(select.message->fields))
 		names.push_back(fmt::format("\"{}\"", f.name));
 	std::list<std::string> where;
@@ -771,8 +784,10 @@ int ODBC::_post_control(const tll_msg_t *msg, int flags)
 	_buf.reserve(65536);
 
 	idx = 1;
-	if (auto r = SQLBindCol(_select_sql, idx++, SQL_C_SBIGINT, &_msg.seq, sizeof(_msg.seq), &_seq_param); r != SQL_SUCCESS)
-		return _log.fail(EINVAL, "Failed to bind seq column: {}", odbcerror(_select_sql));
+	if (_select->with_seq) {
+		if (auto r = SQLBindCol(_select_sql, idx++, SQL_C_SBIGINT, &_msg.seq, sizeof(_msg.seq), &_seq_param); r != SQL_SUCCESS)
+			return _log.fail(EINVAL, "Failed to bind seq column: {}", odbcerror(_select_sql));
+	}
 	for (auto & c : select.convert) {
 		if (sql_column(_select_sql, c, idx++, c.field, view.view(c.field->offset)))
 			return _log.fail(EINVAL, "Failed to bind field {} column: {}", c.field->name, odbcerror(_select_sql));
@@ -802,7 +817,9 @@ int ODBC::_process(long timeout, int flags)
 	auto view = tll::make_view(_buf);
 	_buf.resize(_select->message->size);
 
-	auto i = 1u;
+	auto i = 0u;
+	if (_select->with_seq)
+		i++;
 	for (auto & c : _select->convert) {
 		i++;
 		if (c.type == Prepared::Convert::None)
