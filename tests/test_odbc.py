@@ -137,3 +137,46 @@ LANGUAGE SQL
         c.process()
     assert [(m.type, m.msgid) for m in c.result] == [(c.Type.Data, 20)]
     assert c.unpack(c.result[0]).as_dict() == {'a': 123.45, 'b': 10}
+
+def test_procedure(context, odbcini):
+    scheme = '''yamls://
+    - name: Input
+      options.sql.function: TestProcedure
+      id: 10
+      fields:
+        - {name: a, type: int32}
+        - {name: b, type: double}
+    - name: Output
+      id: 20
+      fields:
+        - {name: a, type: double}
+        - {name: b, type: int32}
+    '''
+    if odbcini.get('driver', '') == 'SQLite3':
+        pytest.skip("Procedures not supported in SQLite3")
+    db = pyodbc.connect(**odbcini) #{k.split('.')[-1]: v for k,v in odbcini.items()}
+    with db.cursor() as c:
+        c.execute(f'DROP TABLE IF EXISTS "Output"')
+
+    c = Accum('odbc://;name=select', scheme=scheme, dump='scheme', context=context, **odbcini)
+    c.open()
+
+    with db.cursor() as cur:
+        cur.execute(f'DROP PROCEDURE IF EXISTS "TestProcedure"')
+        cur.execute('''
+CREATE PROCEDURE "TestProcedure" (seq BIGINT, a INTEGER, b DOUBLE PRECISION)
+LANGUAGE SQL
+AS $$
+INSERT INTO "Output" VALUES(seq, b, a);
+INSERT INTO "Output" VALUES(seq * 2, b * 2, a * 2);
+$$
+''')
+
+    c.post({'a': 10, 'b': 123.45}, name='Input', seq=100)
+
+    c.post({'message': 20}, name='Query', type=c.Type.Control)
+    for _ in range(10):
+        c.process()
+    assert [(m.type, m.msgid, m.seq) for m in c.result] == [(c.Type.Data, 20, 100), (c.Type.Data, 20, 200)]
+    assert c.unpack(c.result[0]).as_dict() == {'a': 123.45, 'b': 10}
+    assert c.unpack(c.result[1]).as_dict() == {'a': 246.9, 'b': 20}

@@ -567,10 +567,9 @@ int ODBC::_create_insert(std::string_view table, const tll::scheme::Message *msg
 
 	std::string query;
 	auto function = tll::getter::get(msg->options, "sql.function");
-	if (function) {
-		auto output = tll::getter::get(msg->options, "sql.function-output");
-		if (!output)
-			return _log.fail(EINVAL, "No function-output option for function-call message '{}'", msg->name);
+	auto output = tll::getter::get(msg->options, "sql.function-output");
+
+	if (function && output) {
 		outmsg = _scheme->lookup(*output);
 		if (!outmsg)
 			return _log.fail(EINVAL, "Output message '{}' for function call message '{}' not found", *output, msg->name);
@@ -580,6 +579,10 @@ int ODBC::_create_insert(std::string_view table, const tll::scheme::Message *msg
 		for (auto & i : names)
 			i = "?";
 		query = fmt::format("SELECT {} FROM \"{}\"({})", join(outnames.begin(), outnames.end()), *function, join(names.begin(), names.end()));
+	} else if (function) {
+		for (auto & i : names)
+			i = "?";
+		query = fmt::format("CALL \"{}\"({})", *function, join(names.begin(), names.end()));
 	} else {
 		//if (_replace)
 		//	operation = "REPLACE";
