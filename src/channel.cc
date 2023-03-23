@@ -439,10 +439,12 @@ int ODBC::_open(const ConstConfig &s)
 
 		auto table = tll::getter::get(m.options, "sql.table").value_or(std::string_view(m.name));
 
-		if (_create_table(table, &m))
-			return _log.fail(EINVAL, "Failed to create table '{}' for '{}'", table, m.name);
-		if (_create_insert(table, &m))
-			return _log.fail(EINVAL, "Failed to prepare SQL statement for '{}'", m.name);
+		if (_create_mode != Create::No) {
+			if (_create_table(table, &m))
+				return _log.fail(EINVAL, "Failed to create table '{}' for '{}'", table, m.name);
+			if (_create_insert(table, &m))
+				return _log.fail(EINVAL, "Failed to prepare SQL statement for '{}'", m.name);
+		}
 	}
 
 	for (auto & [_, m] : _messages) {
