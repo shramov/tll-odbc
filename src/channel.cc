@@ -275,6 +275,7 @@ class ODBC : public tll::channel::Base<ODBC>
 
 	enum class Index { No, Yes, Unique } _seq_index = Index::Unique;
 	enum class Create { No, Checked, Always } _create_mode = Create::Checked;
+	enum class Quotes { SQLite, PSQL, Sybase } _quotes = Quotes::PSQL;
 
  public:
 	static constexpr auto process_policy() { return ProcessPolicy::Custom; }
@@ -294,6 +295,16 @@ class ODBC : public tll::channel::Base<ODBC>
 	int _create_table(std::string_view table, const tll::scheme::Message *);
 	int _create_insert(std::string_view table, const tll::scheme::Message *);
 	int _create_index(const std::string_view &name, std::string_view key, bool unique);
+
+	std::string _quoted(std::string_view name) // Can only be used for table/field names, no escaping performed
+	{
+		switch (_quotes) {
+		case Quotes::SQLite: return fmt::format("`{}`", name);
+		case Quotes::PSQL: return fmt::format("\"{}\"", name);
+		case Quotes::Sybase: return fmt::format("[{}]", name);
+		}
+		return std::string(name);
+	}
 
 	std::string_view _if_not_exists()
 	{
@@ -370,6 +381,7 @@ int ODBC::_init(const Channel::Url &url, Channel * master)
 	}
 
 	_create_mode = reader.getT("create-mode", Create::Checked, {{"no", Create::No}, {"checked", Create::Checked}, {"always", Create::Always}});
+	_quotes = reader.getT("quote-mode", Quotes::PSQL, {{"sqlite", Quotes::SQLite}, {"psql", Quotes::PSQL}, {"sybase", Quotes::Sybase}});
 	if (!reader)
 		return _log.fail(EINVAL, "Invalid url: {}", reader.error());
 
@@ -500,13 +512,13 @@ int ODBC::_create_table(std::string_view table, const tll::scheme::Message * msg
 	if (!with_seq)
 		return _log.fail(EINVAL, "Invalid sql.with-seq option: {}", with_seq.error());
 	if (*with_seq)
-		fields.push_back("\"_tll_seq\" INTEGER");
+		fields.push_back(fmt::format("{} INTEGER", _quoted("_tll_seq")));
 
 	for (auto & f : tll::util::list_wrap(msg->fields)) {
 		auto t = sql_type(&f);
 		if (!t)
 			return _log.fail(EINVAL, "Message {} field {}: {}", msg->name, f.name, t.error());
-		fields.push_back(fmt::format("\"{}\" {} NOT NULL", f.name, *t));
+		fields.push_back(fmt::format("{} {} NOT NULL", _quoted(f.name), *t));
 
 		auto pkey = tll::getter::getT(f.options, "sql.primary-key", false);
 		if (f.type == f.Pointer)
@@ -520,7 +532,7 @@ int ODBC::_create_table(std::string_view table, const tll::scheme::Message * msg
 		}
 	}
 
-	sql = _prepare(fmt::format("CREATE TABLE {}\"{}\" ({})", _if_not_exists(), table, join(fields.begin(), fields.end())));
+	sql = _prepare(fmt::format("CREATE TABLE {}{} ({})", _if_not_exists(), _quoted(table), join(fields.begin(), fields.end())));
 	if (!sql)
 		return _log.fail(EINVAL, "Failed to prepare CREATE statement");
 
@@ -559,10 +571,10 @@ int ODBC::_create_insert(std::string_view table, const tll::scheme::Message *msg
 	if (!with_seq)
 		return _log.fail(EINVAL, "Invalid sql.with-seq option: {}", with_seq.error());
 	if (*with_seq)
-		names.push_back("\"_tll_seq\"");
+		names.push_back(_quoted("_tll_seq"));
 
 	for (auto & f : tll::util::list_wrap(msg->fields))
-		names.push_back(fmt::format("\"{}\"", f.name));
+		names.push_back(_quoted(f.name));
 
 	std::string_view operation = "INSERT";
 	const tll::scheme::Message * outmsg = nullptr;
@@ -577,18 +589,18 @@ int ODBC::_create_insert(std::string_view table, const tll::scheme::Message *msg
 			return _log.fail(EINVAL, "Output message '{}' for function call message '{}' not found", *output, msg->name);
 		std::list<std::string> outnames;
 		for (auto & f : tll::util::list_wrap(outmsg->fields))
-			outnames.push_back(fmt::format("\"{}\"", f.name));
+			outnames.push_back(_quoted(f.name));
 		for (auto & i : names)
 			i = "?";
-		query = fmt::format("SELECT {} FROM \"{}\"({})", join(outnames.begin(), outnames.end()), *function, join(names.begin(), names.end()));
+		query = fmt::format("SELECT {} FROM {}({})", join(outnames.begin(), outnames.end()), _quoted(*function), join(names.begin(), names.end()));
 	} else if (function) {
 		for (auto & i : names)
 			i = "?";
-		query = fmt::format("CALL \"{}\"({})", *function, join(names.begin(), names.end()));
+		query = fmt::format("CALL {}({})", _quoted(*function), join(names.begin(), names.end()));
 	} else {
 		//if (_replace)
 		//	operation = "REPLACE";
-		query = fmt::format("{} INTO \"{}\"({}) VALUES ", operation, table, join(names.begin(), names.end()));
+		query = fmt::format("{} INTO {}({}) VALUES ", operation, _quoted(table), join(names.begin(), names.end()));
 		for (auto & i : names)
 			i = "?";
 		query += fmt::format("({})", join(names.begin(), names.end()));
@@ -613,7 +625,7 @@ int ODBC::_create_index(const std::string_view &name, std::string_view key, bool
 	query_ptr_t sql;
 
 	std::string_view ustr = unique ? "UNIQUE " : "";
-	auto str = fmt::format("CREATE {} INDEX {}\"_tll_{}_{}\" on \"{}\"(\"{}\")", ustr, _if_not_exists(), name, key, name, key);
+	auto str = fmt::format("CREATE {} INDEX {}{} on {}({})", ustr, _if_not_exists(), _quoted(fmt::format("_tll_{}_{}", name, key)), _quoted(name), _quoted(key));
 	sql = _prepare(str);
 	if (!sql)
 		return _log.fail(EINVAL, "Failed to prepare index statement: {}", str);
@@ -734,17 +746,17 @@ int ODBC::_post_control(const tll_msg_t *msg, int flags)
 
 	std::list<std::string> names;
 	if (select.with_seq)
-		names.push_back("\"_tll_seq\"");
+		names.push_back(_quoted("_tll_seq"));
 	for (auto & f : tll::util::list_wrap(select.message->fields))
-		names.push_back(fmt::format("\"{}\"", f.name));
+		names.push_back(_quoted(f.name));
 	std::list<std::string> where;
 	for (auto & e : query.get_expression()) {
 		if (!lookup(select.message->fields, e.get_field()))
 			return _log.fail(ENOENT, "No such field '{}' in message {}", e.get_field(), select.message->name);
-		where.push_back(fmt::format("\"{}\" {} ?", e.get_field(), operator_to_string(e.get_op())));
+		where.push_back(fmt::format("{} {} ?", _quoted(e.get_field()), operator_to_string(e.get_op())));
 	}
 
-	auto str = fmt::format("SELECT {} FROM \"{}\"", join(names.begin(), names.end()), select.message->name);
+	auto str = fmt::format("SELECT {} FROM {}", join(names.begin(), names.end()), _quoted(select.message->name));
 	if (where.size())
 		str += std::string(" WHERE ") + join(" AND ", where.begin(), where.end());
 
