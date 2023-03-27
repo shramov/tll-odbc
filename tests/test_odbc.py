@@ -98,7 +98,7 @@ def test_query(context, odbcini, query, result):
     for _ in range(100):
         s.process()
 
-    assert [(m.type, m.msgid, m.seq) for m in s.result] == [(s.Type.Data, 10, x) for x in result]
+    assert [(m.type, m.msgid, m.seq) for m in s.result] == [(s.Type.Data, 10, x) for x in result] + [(s.Type.Control, 50, 0)]
     for m, r in zip(s.result, result):
         assert s.unpack(m).as_dict() == {'f0': 1000 * r, 'f1': 100.5 * r, 'f2': str(r)}
 
@@ -135,7 +135,7 @@ LANGUAGE SQL
     c.post({'a': 10, 'b': 123.45}, name='Input')
     for _ in range(10):
         c.process()
-    assert [(m.type, m.msgid) for m in c.result] == [(c.Type.Data, 20)]
+    assert [(m.type, m.msgid) for m in c.result] == [(c.Type.Data, 20), (c.Type.Control, 50)]
     assert c.unpack(c.result[0]).as_dict() == {'a': 123.45, 'b': 10}
 
 def test_procedure(context, odbcini):
@@ -177,6 +177,6 @@ $$
     c.post({'message': 20}, name='Query', type=c.Type.Control)
     for _ in range(10):
         c.process()
-    assert [(m.type, m.msgid, m.seq) for m in c.result] == [(c.Type.Data, 20, 100), (c.Type.Data, 20, 200)]
+    assert [(m.type, m.msgid, m.seq) for m in c.result] == [(c.Type.Data, 20, 100), (c.Type.Data, 20, 200), (c.Type.Control, 50, 0)]
     assert c.unpack(c.result[0]).as_dict() == {'a': 123.45, 'b': 10}
     assert c.unpack(c.result[1]).as_dict() == {'a': 246.9, 'b': 20}

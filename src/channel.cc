@@ -826,6 +826,9 @@ int ODBC::_process(long timeout, int flags)
 		if (r == SQL_NO_DATA) {
 			_log.debug("End of data");
 			_update_dcaps(0, dcaps::Process | dcaps::Pending);
+			tll_msg_t msg = { TLL_MESSAGE_CONTROL };
+			msg.msgid = odbc_scheme::EndOfData::meta_id();
+			_callback(&msg);
 			return 0;
 		}
 		return _log.fail(EINVAL, "Failed to fetch data: {}", odbcerror(_select_sql));
