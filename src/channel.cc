@@ -153,7 +153,6 @@ int sql_bind(SQLHSTMT sql, Prepared::Convert &convert, int idx, const tll::schem
 		tll::util::Decimal128::Unpacked u128;
 		data.template dataT<tll::util::Decimal128>()->unpack(u128);
 
-		fmt::print("Sign: {}, Exponent: {}\n", u128.sign, u128.exponent);
 		memcpy(n.val, &u128.mantissa, sizeof(u128.mantissa));
 		n.precision = 34;
 		n.scale = -u128.exponent;
