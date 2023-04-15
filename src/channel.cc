@@ -413,6 +413,8 @@ int ODBC::_init(const Channel::Url &url, Channel * master)
 	if (!_scheme_control.get())
 		return _log.fail(EINVAL, "Failed to load odbc control scheme");
 
+	_errorbuf.resize(512);
+
 	return Base::_init(url, master);
 }
 
