@@ -514,14 +514,18 @@ int ODBC::_create_table(std::string_view table, const tll::scheme::Message * msg
 		fields.push_back(fmt::format("{} INTEGER", _quoted("_tll_seq")));
 
 	for (auto & f : tll::util::list_wrap(msg->fields)) {
+		auto options = f.options;
+		if (f.type == f.Pointer)
+			options = f.type_ptr->options;
+
 		auto t = sql_type(&f);
 		if (!t)
 			return _log.fail(EINVAL, "Message {} field {}: {}", msg->name, f.name, t.error());
-		fields.push_back(fmt::format("{} {} NOT NULL", _quoted(f.name), *t));
 
-		auto pkey = tll::getter::getT(f.options, "sql.primary-key", false);
-		if (f.type == f.Pointer)
-			pkey = tll::getter::getT(f.type_ptr->options, "sql.primary-key", false);
+		auto otype = tll::getter::get(options, "sql.column-type").value_or(*t);
+		fields.push_back(fmt::format("{} {} NOT NULL", _quoted(f.name), otype));
+
+		auto pkey = tll::getter::getT(options, "sql.primary-key", false);
 
 		if (!pkey)
 			_log.warning("Invalid primary-key option: {}", pkey.error());

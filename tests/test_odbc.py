@@ -27,7 +27,7 @@ SCHEME = '''yamls://
         ('uint32', 2345678901),
         ('double', 123.123),
         ('decimal128', Decimal('123.456')),
-        ('string', 'string'),
+        ('string, options.sql.column-type: "VARCHAR(8)"', 'string'),
         ('byte32, options.type: string', 'string'),
         ])
 def test_field(context, odbcini, t, value):
