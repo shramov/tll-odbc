@@ -104,7 +104,7 @@ tll::result_t<std::string> sql_type(const tll::scheme::Field *field)
 
 	case Field::Bytes:
 		if (field->sub_type == Field::ByteString)
-			return "VARCHAR";
+			return fmt::format("VARCHAR({})", field->size);
 		return tll::error("Blobs not supported");
 
 	case Field::Message:
