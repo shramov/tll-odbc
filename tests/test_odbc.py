@@ -6,6 +6,7 @@ import pytest
 from decimal import Decimal
 import pyodbc
 
+from tll.error import TLLError
 from tll.test_util import Accum
 
 SCHEME = '''yamls://
@@ -180,3 +181,36 @@ $$
     assert [(m.type, m.msgid, m.seq) for m in c.result] == [(c.Type.Data, 20, 100), (c.Type.Data, 20, 200), (c.Type.Control, 50, 0)]
     assert c.unpack(c.result[0]).as_dict() == {'a': 123.45, 'b': 10}
     assert c.unpack(c.result[1]).as_dict() == {'a': 246.9, 'b': 20}
+
+@pytest.mark.parametrize("mode", ["no", "checked", "always"])
+def test_create(context, odbcini, mode):
+    dbname = "Data"
+    scheme = f'''yamls://
+    - name: {dbname}
+      id: 10
+      fields:
+        - {{name: f0, type: int32}}
+    '''
+
+    db = pyodbc.connect(**odbcini) #{k.split('.')[-1]: v for k,v in odbcini.items()}
+    def drop(db):
+        with db.cursor() as c:
+            c.execute(f'DROP TABLE IF EXISTS "{dbname}"')
+    def create(db):
+        with db.cursor() as c:
+            c.execute(f'CREATE TABLE "{dbname}" ("_tll_seq" INTEGER NOT NULL, "f0" INTEGER NOT NULL)')
+    drop(db)
+
+    c = Accum(f'odbc://;name=odbc;create-mode={mode}', scheme=scheme, dump='scheme', context=context, create='no', **odbcini)
+    if mode != 'checked':
+        create(db)
+
+    if mode == 'always':
+        with pytest.raises(TLLError): c.open()
+        drop(db)
+        c.close()
+
+    c.open()
+    c.post({'f0': 123}, name=dbname, seq=100)
+
+    assert [tuple(r) for r in db.cursor().execute(f'SELECT * FROM "{dbname}"')] == [(100, 123)]
