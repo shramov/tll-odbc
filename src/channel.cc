@@ -275,6 +275,7 @@ class ODBC : public tll::channel::Base<ODBC>
 	enum class Index { No, Yes, Unique } _seq_index = Index::Unique;
 	enum class Create { No, Checked, Always } _create_mode = Create::Checked;
 	enum class Quotes { SQLite, PSQL, Sybase } _quotes = Quotes::PSQL;
+	enum class Function { Fields, Empty } _function_mode = Function::Fields;
 
  public:
 	static constexpr auto process_policy() { return ProcessPolicy::Custom; }
@@ -381,6 +382,7 @@ int ODBC::_init(const Channel::Url &url, Channel * master)
 
 	_create_mode = reader.getT("create-mode", Create::Checked, {{"no", Create::No}, {"checked", Create::Checked}, {"always", Create::Always}});
 	_quotes = reader.getT("quote-mode", Quotes::PSQL, {{"sqlite", Quotes::SQLite}, {"psql", Quotes::PSQL}, {"sybase", Quotes::Sybase}});
+	_function_mode = reader.getT("function-mode", Function::Fields, {{"fields", Function::Fields}, {"empty", Function::Empty}});
 	if (!reader)
 		return _log.fail(EINVAL, "Invalid url: {}", reader.error());
 
@@ -597,7 +599,11 @@ int ODBC::_create_insert(std::string_view table, const tll::scheme::Message *msg
 			outnames.push_back(_quoted(f.name));
 		for (auto & i : names)
 			i = "?";
-		query = fmt::format("SELECT {} FROM {}({})", join(outnames.begin(), outnames.end()), _quoted(*function), join(names.begin(), names.end()));
+		auto fstring = fmt::format("{}({})", _quoted(*function), join(names.begin(), names.end()));
+		if (_function_mode == Function::Fields)
+			query = fmt::format("SELECT {} FROM {}", join(outnames.begin(), outnames.end()), fstring);
+		else
+			query = fmt::format("SELECT {}", fstring);
 	} else if (function) {
 		for (auto & i : names)
 			i = "?";
