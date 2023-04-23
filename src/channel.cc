@@ -293,7 +293,7 @@ class ODBC : public tll::channel::Base<ODBC>
 
  private:
 	int _create_table(std::string_view table, const tll::scheme::Message *);
-	int _create_insert(std::string_view table, const tll::scheme::Message *);
+	int _create_query(const tll::scheme::Message *);
 	int _create_index(const std::string_view &name, std::string_view key, bool unique);
 
 	std::string _quoted(std::string_view name) // Can only be used for table/field names, no escaping performed
@@ -452,13 +452,7 @@ int ODBC::_open(const ConstConfig &s)
 			continue;
 		}
 
-		auto table = tll::getter::get(m.options, "sql.table").value_or(std::string_view(m.name));
-
-		if (_create_mode != Create::No) {
-			if (_create_table(table, &m))
-				return _log.fail(EINVAL, "Failed to create table '{}' for '{}'", table, m.name);
-		}
-		if (_create_insert(table, &m))
+		if (_create_query(&m))
 			return _log.fail(EINVAL, "Failed to prepare SQL statement for '{}'", m.name);
 	}
 
@@ -570,62 +564,89 @@ int ODBC::_create_table(std::string_view table, const tll::scheme::Message * msg
 	return 0;
 }
 
-int ODBC::_create_insert(std::string_view table, const tll::scheme::Message *msg)
+int ODBC::_create_query(const tll::scheme::Message *msg)
 {
-	std::list<std::string> names;
+	auto reader = tll::make_props_reader(msg->options);
 
-	auto with_seq = tll::getter::getT(msg->options, "sql.with-seq", true);
-	if (!with_seq)
-		return _log.fail(EINVAL, "Invalid sql.with-seq option: {}", with_seq.error());
-	if (*with_seq)
+	auto table = reader.getT<std::string>("sql.table", msg->name);
+
+	std::list<std::string> names;
+	auto with_seq = reader.getT("sql.with-seq", true);
+
+	if (with_seq)
 		names.push_back(_quoted("_tll_seq"));
 
 	for (auto & f : tll::util::list_wrap(msg->fields))
 		names.push_back(_quoted(f.name));
 
-	std::string_view operation = "INSERT";
+	enum Template { None, Insert, Function, Procedure };
+	auto tmpl = reader.getT("sql.template", Insert, {{"none", None}, {"insert", Insert}, {"function", Function}, {"procedure", Procedure}});
+	auto query = reader.getT("sql.query", std::string());
+	auto output = reader.getT("sql.output", std::string());
+
+	if (query.size())
+		tmpl = None;
+
+	auto create = reader.getT("sql.create", tmpl == Insert);
+
+	if (!reader)
+		return _log.fail(EINVAL, "Failed to read SQL options from message '{}': {}", msg->name, reader.error());
+
 	const tll::scheme::Message * outmsg = nullptr;
-
-	std::string query;
-	auto function = tll::getter::get(msg->options, "sql.function");
-	auto output = tll::getter::get(msg->options, "sql.function-output");
-
-	if (function && output) {
-		outmsg = _scheme->lookup(*output);
+	if (output.size()) {
+		outmsg = _scheme->lookup(output);
 		if (!outmsg)
-			return _log.fail(EINVAL, "Output message '{}' for function call message '{}' not found", *output, msg->name);
+			return _log.fail(EINVAL, "Output message '{}' for query '{}' not found", output, msg->name);
+	}
+
+	switch (tmpl) {
+	case None:
+		break;
+	case Insert:
+		query = fmt::format("INSERT INTO {}({}) VALUES ", _quoted(table), join(names.begin(), names.end()));
+		for (auto & i : names)
+			i = "?";
+		query += fmt::format("({})", join(names.begin(), names.end()));
+		break;
+	case Function: {
+		if (!outmsg)
+			return _log.fail(EINVAL, "Function template '{}' without output message", msg->name);
 		std::list<std::string> outnames;
 		for (auto & f : tll::util::list_wrap(outmsg->fields))
 			outnames.push_back(_quoted(f.name));
 		for (auto & i : names)
 			i = "?";
-		auto fstring = fmt::format("{}({})", _quoted(*function), join(names.begin(), names.end()));
 		if (_function_mode == Function::Fields)
-			query = fmt::format("SELECT {} FROM {}", join(outnames.begin(), outnames.end()), fstring);
+			query = fmt::format("SELECT {} FROM", join(outnames.begin(), outnames.end()));
 		else
-			query = fmt::format("SELECT {}", fstring);
-	} else if (function) {
+			query = "SELECT";
+		query += fmt::format(" {}({})", _quoted(table), join(names.begin(), names.end()));
+		break;
+	}
+	case Procedure:
 		for (auto & i : names)
 			i = "?";
-		query = fmt::format("CALL {}({})", _quoted(*function), join(names.begin(), names.end()));
-	} else {
-		//if (_replace)
-		//	operation = "REPLACE";
-		query = fmt::format("{} INTO {}({}) VALUES ", operation, _quoted(table), join(names.begin(), names.end()));
-		for (auto & i : names)
-			i = "?";
-		query += fmt::format("({})", join(names.begin(), names.end()));
+		query = fmt::format("CALL {}({})", _quoted(table), join(names.begin(), names.end()));
+		break;
 	}
 
-	auto sql = _prepare(query);
-	if (!sql)
-		return _log.fail(EINVAL, "Failed to prepare insert statement for table {}: {}", table, query);
+	query_ptr_t sql;
+	if (query.size()) {
+		sql = _prepare(query);
+		if (!sql)
+			return _log.fail(EINVAL, "Failed to prepare insert statement for table {}: {}", table, query);
+	}
+
+	if (create && _create_mode != Create::No) {
+		if (_create_table(table, msg))
+			return _log.fail(EINVAL, "Failed to create table '{}' for '{}'", table, msg->name);
+	}
 
 	auto it = _messages.emplace(msg->msgid, std::move(sql)).first;
 	it->second.message = msg;
-	it->second.convert.resize(*with_seq ? names.size() - 1 : names.size());
+	it->second.convert.resize(with_seq ? names.size() - 1 : names.size());
 	it->second.output_message = outmsg;
-	it->second.with_seq = *with_seq;
+	it->second.with_seq = with_seq;
 
 	return 0;
 }

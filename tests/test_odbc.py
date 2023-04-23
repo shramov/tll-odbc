@@ -106,8 +106,9 @@ def test_query(context, odbcini, query, result):
 def test_function(context, odbcini):
     scheme = '''yamls://
     - name: Input
-      options.sql.function: TestFunction
-      options.sql.function-output: Output
+      options.sql.table: TestFunction
+      options.sql.output: Output
+      options.sql.template: function
       options.sql.with-seq: no
       id: 10
       fields:
@@ -115,6 +116,7 @@ def test_function(context, odbcini):
         - {name: b, type: double}
     - name: Output
       options.sql.with-seq: no
+      options.sql.template: none
       id: 20
       fields:
         - {name: a, type: double}
@@ -142,12 +144,15 @@ LANGUAGE SQL
 def test_procedure(context, odbcini):
     scheme = '''yamls://
     - name: Input
-      options.sql.function: TestProcedure
+      options.sql.table: TestProcedure
+      options.sql.template: procedure
       id: 10
       fields:
         - {name: a, type: int32}
         - {name: b, type: double}
     - name: Output
+      options.sql.template: none
+      options.sql.create: yes
       id: 20
       fields:
         - {name: a, type: double}
@@ -214,3 +219,48 @@ def test_create(context, odbcini, mode):
     c.post({'f0': 123}, name=dbname, seq=100)
 
     assert [tuple(r) for r in db.cursor().execute(f'SELECT * FROM "{dbname}"')] == [(100, 123)]
+
+def test_raw(context, odbcini):
+    dbname = "Data"
+    scheme = f'''yamls://
+    - name: Insert
+      options.sql.table: {dbname}
+      id: 10
+      fields:
+        - {{name: f0, type: int32}}
+        - {{name: f1, type: double}}
+    - name: Select
+      options.sql.table: {dbname}
+      options.sql.with-seq: no
+      options.sql.query: 'SELECT "_tll_seq", "f0", "f1" FROM "{dbname}" WHERE "f0" < ?'
+      options.sql.output: Insert
+      id: 20
+      fields:
+        - {{name: f0, type: int32}}
+    '''
+
+    db = pyodbc.connect(**odbcini) #{k.split('.')[-1]: v for k,v in odbcini.items()}
+    with db.cursor() as c:
+        c.execute('DROP TABLE IF EXISTS "Data"')
+
+    c = Accum(f'odbc://;name=odbc', scheme=scheme, dump='scheme', context=context, **odbcini)
+
+    c.open()
+    c.post({'f0': 10, 'f1': 12.34}, name='Insert', seq=100)
+    c.post({'f0': 20, 'f1': 56.78}, name='Insert', seq=200)
+
+    assert [tuple(r) for r in db.cursor().execute(f'SELECT * FROM "{dbname}"')] == [(100, 10, 12.34), (200, 20, 56.78)]
+
+    c.post({'f0': 0}, name='Select')
+    c.process()
+
+    assert [(m.type, m.msgid) for m in c.result] == [(c.Type.Control, c.scheme_control.messages.EndOfData.msgid)]
+
+    c.result = []
+
+    c.post({'f0': 15}, name='Select')
+    c.process()
+    c.process()
+    assert [(m.type, m.msgid) for m in c.result] == [(c.Type.Data, c.scheme.messages.Insert.msgid), (c.Type.Control, c.scheme_control.messages.EndOfData.msgid)]
+
+    assert c.unpack(c.result[0]).as_dict() == {'f0': 10, 'f1': 12.34}
