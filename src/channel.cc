@@ -380,7 +380,7 @@ int ODBC::_init(const Channel::Url &url, Channel * master)
 			settings.emplace(k, v);
 	}
 
-	_create_mode = reader.getT("create-mode", Create::Checked, {{"no", Create::No}, {"checked", Create::Checked}, {"always", Create::Always}});
+	_create_mode = reader.getT("create-mode", Create::No, {{"no", Create::No}, {"checked", Create::Checked}, {"always", Create::Always}});
 	_quotes = reader.getT("quote-mode", Quotes::PSQL, {{"sqlite", Quotes::SQLite}, {"psql", Quotes::PSQL}, {"sybase", Quotes::Sybase}});
 	_function_mode = reader.getT("function-mode", Function::Fields, {{"fields", Function::Fields}, {"empty", Function::Empty}});
 	if (!reader)

@@ -47,7 +47,7 @@ def test_field(context, odbcini, t, value):
     with db.cursor() as c:
         c.execute('DROP TABLE IF EXISTS "Data"')
 
-    c = Accum('odbc://;name=odbc', scheme=scheme, dump='scheme', context=context, create='no', **odbcini)
+    c = Accum('odbc://;name=odbc;create-mode=checked', scheme=scheme, dump='scheme', context=context, **odbcini)
     c.open()
     c.post({'f0': value}, name=dbname, seq=100)
     #c.post({'f0': value}, name='Data', seq=2)
@@ -87,7 +87,7 @@ def test_query(context, odbcini, query, result):
     with db.cursor() as c:
         c.execute(f'DROP TABLE IF EXISTS "Query"')
 
-    i = context.Channel('odbc://;name=insert', scheme=scheme, dir='w', **odbcini)
+    i = context.Channel('odbc://;name=insert;create-mode=checked', scheme=scheme, dir='w', **odbcini)
     i.open()
     for x in range(10):
         i.post({'f0': 1000 * x, 'f1': 100.5 * x, 'f2': str(x)}, name=f'Query', seq=x)
@@ -243,7 +243,7 @@ def test_raw(context, odbcini):
     with db.cursor() as c:
         c.execute('DROP TABLE IF EXISTS "Data"')
 
-    c = Accum(f'odbc://;name=odbc', scheme=scheme, dump='scheme', context=context, **odbcini)
+    c = Accum(f'odbc://;name=odbc;create-mode=checked', scheme=scheme, dump='scheme', context=context, **odbcini)
 
     c.open()
     c.post({'f0': 10, 'f1': 12.34}, name='Insert', seq=100)
