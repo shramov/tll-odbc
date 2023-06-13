@@ -274,7 +274,7 @@ class ODBC : public tll::channel::Base<ODBC>
 
 	enum class Index { No, Yes, Unique } _seq_index = Index::Unique;
 	enum class Create { No, Checked, Always } _create_mode = Create::Checked;
-	enum class Quotes { SQLite, PSQL, Sybase } _quotes = Quotes::PSQL;
+	enum class Quotes { SQLite, PSQL, Sybase, None } _quotes = Quotes::PSQL;
 	enum class Function { Fields, Empty } _function_mode = Function::Fields;
 
  public:
@@ -302,6 +302,7 @@ class ODBC : public tll::channel::Base<ODBC>
 		case Quotes::SQLite: return fmt::format("`{}`", name);
 		case Quotes::PSQL: return fmt::format("\"{}\"", name);
 		case Quotes::Sybase: return fmt::format("[{}]", name);
+		case Quotes::None: return std::string(name);
 		}
 		return std::string(name);
 	}
@@ -381,7 +382,7 @@ int ODBC::_init(const Channel::Url &url, Channel * master)
 	}
 
 	_create_mode = reader.getT("create-mode", Create::No, {{"no", Create::No}, {"checked", Create::Checked}, {"always", Create::Always}});
-	_quotes = reader.getT("quote-mode", Quotes::PSQL, {{"sqlite", Quotes::SQLite}, {"psql", Quotes::PSQL}, {"sybase", Quotes::Sybase}});
+	_quotes = reader.getT("quote-mode", Quotes::PSQL, {{"sqlite", Quotes::SQLite}, {"psql", Quotes::PSQL}, {"sybase", Quotes::Sybase}, {"none", Quotes::None}});
 	_function_mode = reader.getT("function-mode", Function::Fields, {{"fields", Function::Fields}, {"empty", Function::Empty}});
 	if (!reader)
 		return _log.fail(EINVAL, "Invalid url: {}", reader.error());
