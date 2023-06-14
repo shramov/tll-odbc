@@ -855,6 +855,7 @@ int ODBC::_process(long timeout, int flags)
 	auto r = SQLFetch(_select_sql);
 	if (r != SQL_SUCCESS && r != SQL_SUCCESS_WITH_INFO) {
 		_select = nullptr;
+		SQLCloseCursor(_select_sql);
 		_select_sql.reset();
 		if (r == SQL_NO_DATA) {
 			_log.debug("End of data");
