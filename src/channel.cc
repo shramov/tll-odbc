@@ -538,7 +538,7 @@ int ODBC::_create_table(std::string_view table, const tll::scheme::Message * msg
 	if (!sql)
 		return _log.fail(EINVAL, "Failed to prepare CREATE statement");
 
-	if (auto r = SQLExecute(sql); r != SQL_SUCCESS)
+	if (auto r = SQLExecute(sql); r != SQL_SUCCESS && r != SQL_NO_DATA)
 		return _log.fail(EINVAL, "Failed to create table '{}': {}", table, odbcerror(sql));
 
 	{
@@ -663,7 +663,7 @@ int ODBC::_create_index(const std::string_view &name, std::string_view key, bool
 	if (!sql)
 		return _log.fail(EINVAL, "Failed to prepare index statement: {}", str);
 
-	if (auto r = SQLExecute(sql); r != SQL_SUCCESS)
+	if (auto r = SQLExecute(sql); r != SQL_SUCCESS && r != SQL_NO_DATA)
 		return _log.fail(EINVAL, "Failed to create index for '{}': {}", name, key);
 	return 0;
 }
