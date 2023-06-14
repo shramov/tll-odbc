@@ -442,7 +442,7 @@ int ODBC::_open(const ConstConfig &s)
 	char buf[SQL_MAX_OPTION_STRING_LENGTH];
 	SQLSMALLINT buflen = sizeof(buf);
 	if (auto r = SQLDriverConnect (_db, nullptr, (SQLCHAR *) _settings.data(), _settings.size(),
-                               (SQLCHAR *) buf, sizeof(buf), &buflen, SQL_DRIVER_NOPROMPT); r != SQL_SUCCESS) {
+                               (SQLCHAR *) buf, sizeof(buf), &buflen, SQL_DRIVER_NOPROMPT); r != SQL_SUCCESS && r != SQL_SUCCESS_WITH_INFO) {
 		return _log.fail(EINVAL, "Failed to connect: {}\n\tConnection string: {}", odbcerror(_db), _settings);
 	}
 	_log.info("Connection string: {}", buf); //std::string_view(buf, buflen));
