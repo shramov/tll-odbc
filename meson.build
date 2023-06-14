@@ -18,3 +18,5 @@ test('pytest', import('python').find_installation('python3')
 	, env: 'BUILD_DIR=@0@'.format(meson.current_build_dir())
 	, workdir: meson.current_source_dir()
 )
+
+install_data('src/odbc.yaml', install_dir : get_option('datadir') / 'tll/scheme/tll')
