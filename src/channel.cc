@@ -31,8 +31,6 @@ struct SQLHandle
 
 	operator void * () { return ptr.get(); }
 	operator const void * () const { return ptr.get(); }
-
-	void * release() { void * tmp = *this; ptr.reset(); return tmp; }
 };
 
 using query_ptr_t = SQLHandle<SQL_HANDLE_STMT>;
