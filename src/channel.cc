@@ -711,6 +711,7 @@ int ODBC::_post(const tll_msg_t *msg, int flags)
 		_select = insert.output;
 
 		auto view = tll::make_view(_buf);
+		_buf.resize(0);
 		_buf.resize(_select->message->size);
 		_buf.reserve(65536);
 
