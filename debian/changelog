@@ -1,3 +1,9 @@
+tll-odbc (0.1.0) unstable; urgency=medium
+
+  * First usable version
+
+ -- Pavel Shramov <psha@psha.org.ru>  Sat, 27 Jan 2024 18:58:05 +0300
+
 tll-odbc (0.0.0) unstable; urgency=medium
 
   * Initial release.
