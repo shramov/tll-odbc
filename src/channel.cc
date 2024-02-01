@@ -264,6 +264,7 @@ class ODBC : public tll::channel::Base<ODBC>
 	std::vector<char> _buf;
 	std::list<std::vector<char>> _string_buffers;
 	std::vector<char> _errorbuf;
+	std::string_view _sqlstate;
 
 	std::map<int, Prepared> _messages;
 
@@ -293,6 +294,8 @@ class ODBC : public tll::channel::Base<ODBC>
 	int _create_table(std::string_view table, const tll::scheme::Message *);
 	int _create_query(const tll::scheme::Message *);
 	int _create_index(const std::string_view &name, std::string_view key, bool unique);
+
+	int _execute(query_ptr_t &query, std::string_view message);
 
 	std::string _quoted(std::string_view name) // Can only be used for table/field names, no escaping performed
 	{
@@ -331,6 +334,7 @@ class ODBC : public tll::channel::Base<ODBC>
 	std::string_view _odbcerror(const SQLSMALLINT type, void *handle)
 	{
 		auto view = tll::make_view(_errorbuf);
+		_sqlstate = "";
 
 		for (auto i = 1; ; i++) {
 			if (view.size() < 9)
@@ -362,6 +366,7 @@ class ODBC : public tll::channel::Base<ODBC>
 		auto size = view.dataT<char>() - _errorbuf.data();
 		if (size == 0)
 			return "";
+		_sqlstate = std::string_view(_errorbuf.data() + 1, 5);
 		return std::string_view(_errorbuf.data() + 1, size - 1); // Skip first delimiter
 	}
 };
@@ -697,11 +702,9 @@ int ODBC::_post(const tll_msg_t *msg, int flags)
 		if (sql_bind(insert.sql, c, idx++, c.field, view.view(c.field->offset)))
 			return _log.fail(EINVAL, "Failed to bind field {}: {}", c.field->name, odbcerror(insert.sql));
 	}
-	if (auto r = SQLExecute(insert.sql); r != SQL_SUCCESS) {
-		if (r == SQL_NEED_DATA)
-			return _log.fail(EINVAL, "Failed to insert: SQL_NEED_DATA: {}", odbcerror(insert.sql));
-		return _log.fail(EINVAL, "Failed to insert data: {}", odbcerror(insert.sql));
-	}
+
+	if (auto r = _execute(insert.sql, "insert"); r)
+		return r;
 
 	if (!insert.output)
 		return 0;
@@ -727,6 +730,19 @@ int ODBC::_post(const tll_msg_t *msg, int flags)
 		}
 
 		_update_dcaps(dcaps::Process | dcaps::Pending);
+	}
+	return 0;
+}
+
+int ODBC::_execute(query_ptr_t &query, std::string_view message)
+{
+	if (auto r = SQLExecute(query); r != SQL_SUCCESS) {
+		auto error = odbcerror(query);
+		if (_sqlstate == "08S01") // Fatal connection error
+			return state_fail(EINVAL, "Failed to {} data: {}", message, error);
+		if (r == SQL_NEED_DATA)
+			return _log.fail(EINVAL, "Failed to {}: SQL_NEED_DATA: {}", message, error);
+		return _log.fail(EINVAL, "Failed to {} data: {}", message, error);
 	}
 	return 0;
 }
@@ -820,11 +836,8 @@ int ODBC::_post_control(const tll_msg_t *msg, int flags)
 		idx++;
 	}
 
-	if (auto r = SQLExecute(_select_sql); r != SQL_SUCCESS) {
-		if (r == SQL_NEED_DATA)
-			return _log.fail(EINVAL, "Failed to select data: SQL_NEED_DATA: {}", odbcerror(_select_sql));
-		return _log.fail(EINVAL, "Failed to select data: {}", odbcerror(_select_sql));
-	}
+	if (auto r = _execute(_select_sql, "select"); r)
+		return r;
 
 	_select = &select;
 
@@ -864,7 +877,10 @@ int ODBC::_process(long timeout, int flags)
 			_callback(&msg);
 			return 0;
 		}
-		return _log.fail(EINVAL, "Failed to fetch data: {}", odbcerror(_select_sql));
+		auto error = odbcerror(_select_sql);
+		if (_sqlstate == "08S01")
+			return state_fail(EINVAL, "Failed to fetch data: {}", error);
+		return _log.fail(EINVAL, "Failed to fetch data: {}", error);
 	}
 
 	auto view = tll::make_view(_buf);
