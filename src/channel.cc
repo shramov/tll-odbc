@@ -689,6 +689,11 @@ int ODBC::_post(const tll_msg_t *msg, int flags)
 		return _log.fail(ENOENT, "Message {} not found", msg->msgid);
 	auto & insert = it->second;
 
+	if (!insert.sql) {
+		_log.trace("Skip message {} without SQL statement", insert.message->name);
+		return 0;
+	}
+
 	SQLFreeStmt(insert.sql, SQL_RESET_PARAMS);
 
 	auto view = tll::make_view(*msg);

@@ -264,3 +264,17 @@ def test_raw(context, odbcini):
     assert [(m.type, m.msgid) for m in c.result] == [(c.Type.Data, c.scheme.messages.Insert.msgid), (c.Type.Control, c.scheme_control.messages.EndOfData.msgid)]
 
     assert c.unpack(c.result[0]).as_dict() == {'f0': 10, 'f1': 12.34}
+
+def test_none(context, odbcini):
+    scheme = '''yamls://
+    - name: Ignore
+      options.sql.template: none
+      id: 20
+      fields:
+        - {name: f0, type: int32}
+    '''
+
+    c = Accum(f'odbc://;name=odbc;create-mode=no', scheme=scheme, dump='yes', context=context, **odbcini)
+
+    c.open()
+    c.post({'f0': 30}, name='Ignore')
