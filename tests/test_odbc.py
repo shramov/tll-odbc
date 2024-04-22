@@ -278,3 +278,33 @@ def test_none(context, odbcini):
 
     c.open()
     c.post({'f0': 30}, name='Ignore')
+
+def test_null(context, odbcini):
+    dbname = "Data"
+    scheme = '''yamls://
+    - name: Data
+      options.sql.with-seq: no
+      id: 10
+      fields:
+        - {name: pmap, type: uint8, options.pmap: yes}
+        - {name: f0, type: int32}
+        - {name: f1, type: double, options.optional: yes}
+        - {name: f2, type: int64, options.optional: yes}
+    '''
+
+    db = pyodbc.connect(**odbcini)
+    with db.cursor() as c:
+        c.execute(f'DROP TABLE IF EXISTS "{dbname}"')
+        c.execute(f'CREATE TABLE "{dbname}" (f0 INTEGER, f1 DOUBLE, f2 VARCHAR(255))')
+        c.execute(f'INSERT INTO "{dbname}" VALUES (10, NULL, NULL), (NULL, 123.456, NULL), (NULL, NULL, 1234)')
+
+    c = Accum(f'odbc://;name=odbc;create-mode=checked', scheme=scheme, dump='scheme', context=context, **odbcini)
+
+    c.open()
+
+    c.post({'message': 10}, name='Query', type=c.Type.Control)
+
+    for _ in range(4):
+        c.process()
+    assert [c.unpack(m).as_dict() for m in c.result[:-1]] == [{'f0': 10}, {'f0': 0, 'f1': 123.456}, {'f0': 0, 'f2': 1234}]
+    assert [(m.type, m.msgid) for m in c.result[-1:]] == [(c.Type.Control, c.scheme_control.messages.EndOfData.msgid)]

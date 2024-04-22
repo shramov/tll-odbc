@@ -471,6 +471,8 @@ int ODBC::_open(const ConstConfig &s)
 		auto ibuf = _string_buffers.begin();
 		auto i = 0;
 		for (auto & f : tll::util::list_wrap(m.message->fields)) {
+			if (&f == m.message->pmap)
+				continue;
 			auto & conv = m.convert[i++];
 			conv.field = &f;
 			if (f.type == Field::Pointer && f.type_ptr->type == Field::Int8 && f.sub_type == Field::ByteString) {
@@ -516,6 +518,8 @@ int ODBC::_create_table(std::string_view table, const tll::scheme::Message * msg
 		fields.push_back(fmt::format("{} INTEGER", _quoted("_tll_seq")));
 
 	for (auto & f : tll::util::list_wrap(msg->fields)) {
+		if (&f == msg->pmap)
+			continue;
 		auto options = f.options;
 		if (f.type == f.Pointer)
 			options = f.type_ptr->options;
@@ -580,8 +584,11 @@ int ODBC::_create_query(const tll::scheme::Message *msg)
 	if (with_seq)
 		names.push_back(_quoted("_tll_seq"));
 
-	for (auto & f : tll::util::list_wrap(msg->fields))
+	for (auto & f : tll::util::list_wrap(msg->fields)) {
+		if (&f == msg->pmap)
+			continue;
 		names.push_back(_quoted(f.name));
+	}
 
 	enum Template { None, Insert, Function, Procedure };
 	auto tmpl = reader.getT("sql.template", Insert, {{"none", None}, {"insert", Insert}, {"function", Function}, {"procedure", Procedure}});
@@ -616,8 +623,11 @@ int ODBC::_create_query(const tll::scheme::Message *msg)
 		if (!outmsg)
 			return _log.fail(EINVAL, "Function template '{}' without output message", msg->name);
 		std::list<std::string> outnames;
-		for (auto & f : tll::util::list_wrap(outmsg->fields))
+		for (auto & f : tll::util::list_wrap(outmsg->fields)) {
+			if (&f == outmsg->pmap)
+				continue;
 			outnames.push_back(_quoted(f.name));
+		}
 		for (auto & i : names)
 			i = "?";
 		if (_function_mode == Function::Fields)
@@ -800,8 +810,11 @@ int ODBC::_post_control(const tll_msg_t *msg, int flags)
 	std::list<std::string> names;
 	if (select.with_seq)
 		names.push_back(_quoted("_tll_seq"));
-	for (auto & f : tll::util::list_wrap(select.message->fields))
+	for (auto & f : tll::util::list_wrap(select.message->fields)) {
+		if (&f == select.message->pmap)
+			continue;
 		names.push_back(_quoted(f.name));
+	}
 	std::list<std::string> where;
 	for (auto & e : query.get_expression()) {
 		if (!lookup(select.message->fields, e.get_field()))
@@ -894,8 +907,16 @@ int ODBC::_process(long timeout, int flags)
 	auto i = 0u;
 	if (_select->with_seq)
 		i++;
+	auto pmap = _select->message->pmap;
+	if (pmap)
+		memset(view.view(pmap->offset).data(), 0, pmap->size);
 	for (auto & c : _select->convert) {
 		i++;
+		if (c.param == SQL_NULL_DATA)
+			continue;
+		if (pmap && c.field->index >= 0)
+			tll_scheme_pmap_set(view.view(pmap->offset).data(), c.field->index);
+
 		if (c.type == Prepared::Convert::None)
 			continue;
 		auto data = view.view(c.field->offset);
