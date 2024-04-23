@@ -928,8 +928,10 @@ int ODBC::_process(long timeout, int flags)
 		memset(view.view(pmap->offset).data(), 0, pmap->size);
 	for (auto & c : _select->convert) {
 		i++;
-		if (c.param == SQL_NULL_DATA)
+		if (c.param == SQL_NULL_DATA) {
+			memset(view.view(c.field->offset).data(), 0, c.field->size);
 			continue;
+		}
 		if (pmap && c.field->index >= 0)
 			tll_scheme_pmap_set(view.view(pmap->offset).data(), c.field->index);
 
