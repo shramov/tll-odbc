@@ -143,13 +143,6 @@ LANGUAGE SQL
 
 def test_procedure(context, odbcini):
     scheme = '''yamls://
-    - name: Input
-      options.sql.table: TestProcedure
-      options.sql.template: procedure
-      id: 10
-      fields:
-        - {name: a, type: int32}
-        - {name: b, type: double}
     - name: Output
       options.sql.template: none
       options.sql.create: yes
@@ -157,6 +150,13 @@ def test_procedure(context, odbcini):
       fields:
         - {name: a, type: double}
         - {name: b, type: int32}
+    - name: Input
+      options.sql.table: TestProcedure
+      options.sql.template: procedure
+      id: 10
+      fields:
+        - {name: a, type: int32}
+        - {name: b, type: double}
     '''
     if odbcini.get('driver', '') == 'SQLite3':
         pytest.skip("Procedures not supported in SQLite3")
@@ -164,7 +164,7 @@ def test_procedure(context, odbcini):
     with db.cursor() as c:
         c.execute(f'DROP TABLE IF EXISTS "Output"')
 
-    c = Accum('odbc://;name=select', scheme=scheme, dump='scheme', context=context, **odbcini)
+    c = Accum('odbc://;name=select;create-mode=checked', scheme=scheme, dump='scheme', context=context, **odbcini)
     c.open()
 
     with db.cursor() as cur:
@@ -295,7 +295,7 @@ def test_null(context, odbcini):
     db = pyodbc.connect(**odbcini)
     with db.cursor() as c:
         c.execute(f'DROP TABLE IF EXISTS "{dbname}"')
-        c.execute(f'CREATE TABLE "{dbname}" (f0 INTEGER, f1 DOUBLE, f2 VARCHAR(255))')
+        c.execute(f'CREATE TABLE "{dbname}" (f0 INTEGER, f1 DOUBLE PRECISION, f2 VARCHAR(255))')
         c.execute(f'INSERT INTO "{dbname}" VALUES (10, NULL, NULL), (NULL, 123.456, NULL), (NULL, NULL, 1234)')
 
     c = Accum(f'odbc://;name=odbc;create-mode=checked', scheme=scheme, dump='scheme', context=context, **odbcini)
@@ -323,6 +323,10 @@ def test_null_insert(context, odbcini):
         - {name: f2, type: byte16, options.type: string, options.optional: yes}
     '''
 
+    db = pyodbc.connect(**odbcini)
+    with db.cursor() as c:
+        c.execute(f'DROP TABLE IF EXISTS "{dbname}"')
+
     c = Accum(f'odbc://;name=odbc;create-mode=checked', scheme=scheme, dump='scheme', context=context, **odbcini)
 
     c.open()
@@ -331,7 +335,6 @@ def test_null_insert(context, odbcini):
     c.post({'f1': 123.456}, name='Data')
     c.post({'f2': "string"}, name='Data')
 
-    db = pyodbc.connect(**odbcini)
     with db.cursor() as c:
         r = list(c.execute(f'SELECT f0,f1,f2 FROM "{dbname}"'))
         assert [tuple(x) for x in r] == [(10, None, None), (0, 123.456, None), (0, None, "string")]
