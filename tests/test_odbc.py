@@ -308,3 +308,30 @@ def test_null(context, odbcini):
         c.process()
     assert [c.unpack(m).as_dict() for m in c.result[:-1]] == [{'f0': 10}, {'f0': 0, 'f1': 123.456}, {'f0': 0, 'f2': 1234}]
     assert [(m.type, m.msgid) for m in c.result[-1:]] == [(c.Type.Control, c.scheme_control.messages.EndOfData.msgid)]
+
+def test_null_insert(context, odbcini):
+    dbname = "Data"
+    scheme = '''yamls://
+    - name: Data
+      options.sql.with-seq: no
+      options.sql.template: insert
+      id: 10
+      fields:
+        - {name: pmap, type: uint8, options.pmap: yes}
+        - {name: f0, type: int32}
+        - {name: f1, type: double, options.optional: yes}
+        - {name: f2, type: byte16, options.type: string, options.optional: yes}
+    '''
+
+    c = Accum(f'odbc://;name=odbc;create-mode=checked', scheme=scheme, dump='scheme', context=context, **odbcini)
+
+    c.open()
+
+    c.post({'f0': 10}, name='Data')
+    c.post({'f1': 123.456}, name='Data')
+    c.post({'f2': "string"}, name='Data')
+
+    db = pyodbc.connect(**odbcini)
+    with db.cursor() as c:
+        r = list(c.execute(f'SELECT f0,f1,f2 FROM "{dbname}"'))
+        assert [tuple(x) for x in r] == [(10, None, None), (0, 123.456, None), (0, None, "string")]

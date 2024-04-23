@@ -147,6 +147,8 @@ int sql_bind(SQLHSTMT sql, Prepared::Convert &convert, int idx, const tll::schem
 		return SQL_ERROR;
 
 	case Field::Decimal128: {
+		if (convert.param == SQL_NULL_DATA)
+			return SQLBindParam(sql, idx, SQL_C_NUMERIC, SQL_NUMERIC, 0, 0, &convert.numeric, &convert.param);
 		auto & n = convert.numeric;
 		tll::util::Decimal128::Unpacked u128;
 		data.template dataT<tll::util::Decimal128>()->unpack(u128);
@@ -172,6 +174,8 @@ int sql_bind(SQLHSTMT sql, Prepared::Convert &convert, int idx, const tll::schem
 
 	case Field::Bytes:
 		if (field->sub_type == Field::ByteString) {
+			if (convert.param == SQL_NULL_DATA)
+				return SQLBindParam(sql, idx, SQL_C_CHAR, SQL_VARCHAR, 0, 0, (SQLPOINTER) convert.string, &convert.param);
 			auto str = data.template dataT<char>();
 			convert.param = strnlen(str, field->size);
 			return SQLBindParam(sql, idx, SQL_C_CHAR, SQL_VARCHAR, 0, 0, (SQLPOINTER) str, &convert.param);
@@ -184,6 +188,8 @@ int sql_bind(SQLHSTMT sql, Prepared::Convert &convert, int idx, const tll::schem
 		return SQL_ERROR;
 	case Field::Pointer:
 		if (field->type_ptr->type == Field::Int8 && field->sub_type == Field::ByteString) {
+			if (convert.param == SQL_NULL_DATA)
+				return SQLBindParam(sql, idx, SQL_C_CHAR, SQL_VARCHAR, 0, 0, (SQLPOINTER) convert.string, &convert.param);
 			auto ptr = tll::scheme::read_pointer(field, data);
 			if (!ptr)
 				return SQL_ERROR;
@@ -529,7 +535,10 @@ int ODBC::_create_table(std::string_view table, const tll::scheme::Message * msg
 			return _log.fail(EINVAL, "Message {} field {}: {}", msg->name, f.name, t.error());
 
 		auto otype = tll::getter::get(options, "sql.column-type").value_or(*t);
-		fields.push_back(fmt::format("{} {} NOT NULL", _quoted(f.name), otype));
+		std::string_view notnull = " NOT NULL";
+		if (msg->pmap && f.index >= 0)
+			notnull = "";
+		fields.push_back(fmt::format("{} {}{}", _quoted(f.name), otype, notnull));
 
 		auto pkey = tll::getter::getT(options, "sql.primary-key", false);
 
@@ -713,7 +722,14 @@ int ODBC::_post(const tll_msg_t *msg, int flags)
 		if (auto r = SQLBindParam(insert.sql, idx++, SQL_C_SBIGINT, SQL_BIGINT, 0, 0, (SQLPOINTER) &msg->seq, &_seq_param); r != SQL_SUCCESS)
 			return _log.fail(EINVAL, "Failed to bind seq: {}", odbcerror(insert.sql));
 	}
+	auto pmap = insert.message->pmap;
 	for (auto & c : insert.convert) {
+		if (pmap && c.field->index >= 0) {
+			if (tll_scheme_pmap_get(view.view(pmap->offset).data(), c.field->index))
+				c.param = 0;
+			else
+				c.param = SQL_NULL_DATA;
+		}
 		if (sql_bind(insert.sql, c, idx++, c.field, view.view(c.field->offset)))
 			return _log.fail(EINVAL, "Failed to bind field {}: {}", c.field->name, odbcerror(insert.sql));
 	}
