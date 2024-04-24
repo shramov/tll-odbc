@@ -1,3 +1,10 @@
+tll-odbc (0.2.0) unstable; urgency=medium
+
+  * Support for optional fields and NULL values from database
+  * Do noting on posts for 'sql.template: none' messages
+
+ -- Pavel Shramov <shramov@mexmat.net>  Wed, 24 Apr 2024 09:48:38 +0300
+
 tll-odbc (0.1.0) unstable; urgency=medium
 
   * First usable version
