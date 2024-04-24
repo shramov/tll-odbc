@@ -14,6 +14,8 @@ from tll.channel import Context
 
 @pytest.fixture
 def odbcini(tmp_path):
+    if (dsn := os.environ.get("TEST_DSN", "")) != "":
+        return {'dsn': dsn}
     db = f'{tmp_path}/test.db'
     kw = {
         'settings.description': 'Test SQLite database',
