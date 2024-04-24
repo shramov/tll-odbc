@@ -298,7 +298,7 @@ def test_null(context, odbcini):
         c.execute(f'CREATE TABLE "{dbname}" (f0 INTEGER, f1 DOUBLE PRECISION, f2 VARCHAR(255))')
         c.execute(f'INSERT INTO "{dbname}" VALUES (10, NULL, NULL), (NULL, 123.456, NULL), (NULL, NULL, 1234)')
 
-    c = Accum(f'odbc://;name=odbc;create-mode=checked', scheme=scheme, dump='scheme', context=context, **odbcini)
+    c = Accum(f'odbc://;name=odbc;create-mode=no', scheme=scheme, dump='scheme', context=context, **odbcini)
 
     c.open()
 
