@@ -3,11 +3,13 @@
 
 import pytest
 
+import datetime
 from decimal import Decimal
 import pyodbc
 
 from tll.error import TLLError
 from tll.test_util import Accum
+from tll.chrono import TimePoint
 
 SCHEME = '''yamls://
 - name: Data
@@ -338,3 +340,50 @@ def test_null_insert(context, odbcini):
     with db.cursor() as c:
         r = list(c.execute(f'SELECT f0,f1,f2 FROM "{dbname}"'))
         assert [tuple(x) for x in r] == [(10, None, None), (0, 123.456, None), (0, None, "string")]
+
+@pytest.mark.parametrize("t,prec,value",
+        [('uint16', 'day', '2024-01-02'),
+        ('int64', 's', '2000-01-02T03:04:05'),
+        ('int64', 'ms', '2000-01-02T03:04:05.678'),
+        ('int64', 'us', '2000-01-02T03:04:05.678901'),
+        ('int64', 'ns', '2000-01-02T03:04:05.678901234'),
+        ('double', 's', '2000-01-02T03:04:05.678'),
+        ])
+def test_timestamp(context, odbcini, t, prec, value):
+    value = TimePoint.from_str(value)
+    if odbcini.get('driver', '') == 'SQLite3':
+        # SQLite3 stores only 3 digits
+        value = TimePoint(value, 'ms', type=int)
+
+    dbname = "Data"
+    scheme = f'''yamls://
+    - name: {dbname}
+      options.sql.template: insert
+      id: 10
+      fields:
+        - {{name: f0, type: {t}, options.type: time_point, options.resolution: {prec}}}
+    '''
+
+    db = pyodbc.connect(**odbcini) #{k.split('.')[-1]: v for k,v in odbcini.items()}
+    with db.cursor() as c:
+        c.execute('DROP TABLE IF EXISTS "Data"')
+
+    c = Accum('odbc://;name=odbc;create-mode=checked', scheme=scheme, dump='scheme', context=context, **odbcini)
+    c.open()
+    c.post({'f0': value}, name=dbname, seq=100)
+
+    if t != 'double':
+        dt = datetime.datetime.utcfromtimestamp(value.seconds)
+        assert [tuple(r) for r in db.cursor().execute(f'SELECT * FROM "Data"')] == [(100, dt)]
+
+    c.post({'message': 10}, name='Query', type=c.Type.Control)
+
+    c.process()
+    assert [(m.type, m.msgid, m.seq) for m in c.result] == [(c.Type.Data, 10, 100)]
+
+    r = c.unpack(c.result[-1]).f0
+
+    if t == 'double':
+        pytest.approx(value.seconds, 0.000001) == r.seconds
+    else:
+        r == value

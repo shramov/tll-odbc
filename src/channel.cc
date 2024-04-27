@@ -6,8 +6,11 @@
 #include <tll/util/memoryview.h>
 #include <tll/util/decimal128.h>
 
+#include <chrono>
+
 #include <sql.h>
 #include <sqlext.h>
+#include <time.h>
 
 #include "odbc-scheme.h"
 
@@ -44,13 +47,14 @@ struct Prepared
 	Prepared * output = nullptr; // Non-null for function calls
 
 	struct Convert {
-		enum Type { None, ByteString, String, Numeric } type = None;
+		enum Type { None, String, Numeric, Timestamp } type = None;
 		const tll::scheme::Field * field;
 		SQLLEN param;
 		union {
 			int64_t integer;
 			char * string;
 			SQL_NUMERIC_STRUCT numeric;
+			SQL_TIMESTAMP_STRUCT timestamp;
 		};
 	};
 	std::vector<Convert> convert;
@@ -81,6 +85,12 @@ std::string join(const Iter &begin, const Iter &end)
 tll::result_t<std::string> sql_type(const tll::scheme::Field *field)
 {
 	using tll::scheme::Field;
+	switch (field->sub_type) {
+	case Field::TimePoint:
+		return "TIMESTAMP";
+	default:
+		break;
+	}
 	switch (field->type) {
 	case Field::Int8:
 	case Field::UInt8:
@@ -120,28 +130,110 @@ tll::result_t<std::string> sql_type(const tll::scheme::Field *field)
 	return tll::error("Invalid field type");
 }
 
-template <typename Buf>
-int sql_bind(SQLHSTMT sql, Prepared::Convert &convert, int idx, const tll::scheme::Field *field, const Buf &data)
+template <typename T, typename Res>
+std::pair<time_t, unsigned> split_time(const T * data)
+{
+	using namespace std::chrono;
+	auto ts = (const duration<T, Res> *) data;
+	auto seconds = duration_cast<duration<time_t, std::ratio<1>>>(*ts);
+	auto sub = duration_cast<duration<unsigned, std::nano>>(*ts - seconds);
+	return { seconds.count(), sub.count() };
+}
+
+template <typename T, typename Res>
+T compose_time(time_t seconds, unsigned ns)
+{
+	using namespace std::chrono;
+	auto ts = duration_cast<duration<T, Res>>(std::chrono::seconds { seconds });
+	ts += duration_cast<duration<T, Res>>(duration<unsigned, std::nano>(ns));
+	return ts.count();
+}
+
+template <typename T, typename Buf>
+int write_time(tll::Logger &_log, const Prepared::Convert & convert, Buf data)
 {
 	using tll::scheme::Field;
-	switch (field->type) {
+	struct tm ctm;
+	const auto & sqlts = convert.timestamp;
+	ctm.tm_year = sqlts.year - 1900;
+	ctm.tm_mon = sqlts.month - 1;
+	ctm.tm_mday = sqlts.day;
+	ctm.tm_hour = sqlts.hour;
+	ctm.tm_min = sqlts.minute;
+	ctm.tm_sec = sqlts.second;
+	auto seconds = timegm(&ctm);
+	if (seconds == -1)
+		return _log.fail(EINVAL, "Failed to convert timestamp {}-{}-{}: {}", sqlts.year, sqlts.month, sqlts.day, strerror(errno));
+
+	T value;
+	switch (convert.field->time_resolution) {
+	case TLL_SCHEME_TIME_NS: value = compose_time<T, std::nano>(seconds, sqlts.fraction); break;
+	case TLL_SCHEME_TIME_US: value = compose_time<T, std::micro>(seconds, sqlts.fraction); break;
+	case TLL_SCHEME_TIME_MS: value = compose_time<T, std::milli>(seconds, sqlts.fraction); break;
+	case TLL_SCHEME_TIME_SECOND: value = compose_time<T, std::ratio<1>>(seconds, sqlts.fraction); break;
+	case TLL_SCHEME_TIME_MINUTE: value = compose_time<T, std::ratio<60>>(seconds, sqlts.fraction); break;
+	case TLL_SCHEME_TIME_HOUR: value = compose_time<T, std::ratio<3600>>(seconds, sqlts.fraction); break;
+	case TLL_SCHEME_TIME_DAY: value = compose_time<T, std::ratio<86400>>(seconds, sqlts.fraction); break;
+	default:
+		return _log.fail(EINVAL, "Unknown time resolution: {}", (int) convert.field->time_resolution);
+	}
+	*data.template dataT<T>() = value;
+	return 0;
+}
+
+template <typename T>
+int sql_bind_numeric(SQLHSTMT sql, int idx, int ctype, int sqltype, const T * data, Prepared::Convert &convert)
+{
+	using tll::scheme::Field;
+	if (convert.field->sub_type == Field::TimePoint) {
+		std::pair<time_t, unsigned> parts = {};
+		switch (convert.field->time_resolution) {
+		case TLL_SCHEME_TIME_NS: parts = split_time<T, std::nano>(data); break;
+		case TLL_SCHEME_TIME_US: parts = split_time<T, std::micro>(data); break;
+		case TLL_SCHEME_TIME_MS: parts = split_time<T, std::milli>(data); break;
+		case TLL_SCHEME_TIME_SECOND: parts = split_time<T, std::ratio<1>>(data); break;
+		case TLL_SCHEME_TIME_MINUTE: parts = split_time<T, std::ratio<60>>(data); break;
+		case TLL_SCHEME_TIME_HOUR: parts = split_time<T, std::ratio<3600>>(data); break;
+		case TLL_SCHEME_TIME_DAY: parts = split_time<T, std::ratio<86400>>(data); break;
+		}
+		struct tm result;
+		if (!gmtime_r(&parts.first, &result))
+			return EOVERFLOW;
+		convert.timestamp.year = 1900 + result.tm_year;
+		convert.timestamp.month = 1 + result.tm_mon;
+		convert.timestamp.day = result.tm_mday;
+		convert.timestamp.hour = result.tm_hour;
+		convert.timestamp.minute = result.tm_min;
+		convert.timestamp.second = result.tm_sec;
+		convert.timestamp.fraction = parts.second;
+		convert.param = sizeof(convert.timestamp);
+		return SQLBindParam(sql, idx, SQL_C_TYPE_TIMESTAMP, SQL_TYPE_TIMESTAMP, 0, 0, (SQLPOINTER) &convert.timestamp, &convert.param);
+	}
+	return SQLBindParam(sql, idx, ctype, sqltype, 0, 0, (SQLPOINTER) data, &convert.param);
+}
+
+template <typename Buf>
+int sql_bind(SQLHSTMT sql, Prepared::Convert &convert, int idx, const Buf &data)
+{
+	using tll::scheme::Field;
+	switch (convert.field->type) {
 	case Field::Int8:
-		return SQLBindParam(sql, idx, SQL_C_STINYINT, SQL_SMALLINT, 0, 0, (SQLPOINTER) data.data(), &convert.param);
+		return sql_bind_numeric(sql, idx, SQL_C_STINYINT, SQL_SMALLINT, data.template dataT<int8_t>(), convert);
 	case Field::Int16:
-		return SQLBindParam(sql, idx, SQL_C_SSHORT, SQL_INTEGER, 0, 0, (SQLPOINTER) data.data(), &convert.param);
+		return sql_bind_numeric(sql, idx, SQL_C_SSHORT, SQL_INTEGER, data.template dataT<int16_t>(), convert);
 	case Field::Int32:
-		return SQLBindParam(sql, idx, SQL_C_SLONG, SQL_INTEGER, 0, 0, (SQLPOINTER) data.data(), &convert.param);
+		return sql_bind_numeric(sql, idx, SQL_C_SLONG, SQL_INTEGER, data.template dataT<int32_t>(), convert);
 	case Field::Int64:
-		return SQLBindParam(sql, idx, SQL_C_SBIGINT, SQL_BIGINT, 0, 0, (SQLPOINTER) data.data(), &convert.param);
+		return sql_bind_numeric(sql, idx, SQL_C_SBIGINT, SQL_BIGINT, data.template dataT<int64_t>(), convert);
 	case Field::UInt8:
-		return SQLBindParam(sql, idx, SQL_C_UTINYINT, SQL_SMALLINT, 0, 0, (SQLPOINTER) data.data(), &convert.param);
+		return sql_bind_numeric(sql, idx, SQL_C_UTINYINT, SQL_SMALLINT, data.template dataT<uint8_t>(), convert);
 	case Field::UInt16:
-		return SQLBindParam(sql, idx, SQL_C_USHORT, SQL_INTEGER, 0, 0, (SQLPOINTER) data.data(), &convert.param);
+		return sql_bind_numeric(sql, idx, SQL_C_USHORT, SQL_INTEGER, data.template dataT<uint16_t>(), convert);
 	case Field::UInt32:
-		return SQLBindParam(sql, idx, SQL_C_ULONG, SQL_BIGINT, 0, 0, (SQLPOINTER) data.data(), &convert.param);
+		return sql_bind_numeric(sql, idx, SQL_C_ULONG, SQL_BIGINT, data.template dataT<uint32_t>(), convert);
 
 	case Field::Double:
-		return SQLBindParam(sql, idx, SQL_C_DOUBLE, SQL_DOUBLE, 0, 0, (SQLPOINTER) data.data(), &convert.param);
+		return sql_bind_numeric(sql, idx, SQL_C_DOUBLE, SQL_DOUBLE, data.template dataT<double>(), convert);
 
 	case Field::UInt64:
 		return SQL_ERROR;
@@ -173,11 +265,11 @@ int sql_bind(SQLHSTMT sql, Prepared::Convert &convert, int idx, const tll::schem
 	}
 
 	case Field::Bytes:
-		if (field->sub_type == Field::ByteString) {
+		if (convert.field->sub_type == Field::ByteString) {
 			if (convert.param == SQL_NULL_DATA)
 				return SQLBindParam(sql, idx, SQL_C_CHAR, SQL_VARCHAR, 0, 0, (SQLPOINTER) convert.string, &convert.param);
 			auto str = data.template dataT<char>();
-			convert.param = strnlen(str, field->size);
+			convert.param = strnlen(str, convert.field->size);
 			return SQLBindParam(sql, idx, SQL_C_CHAR, SQL_VARCHAR, 0, 0, (SQLPOINTER) str, &convert.param);
 		}
 		return SQL_ERROR;
@@ -187,10 +279,10 @@ int sql_bind(SQLHSTMT sql, Prepared::Convert &convert, int idx, const tll::schem
 	case Field::Array:
 		return SQL_ERROR;
 	case Field::Pointer:
-		if (field->type_ptr->type == Field::Int8 && field->sub_type == Field::ByteString) {
+		if (convert.field->type_ptr->type == Field::Int8 && convert.field->sub_type == Field::ByteString) {
 			if (convert.param == SQL_NULL_DATA)
 				return SQLBindParam(sql, idx, SQL_C_CHAR, SQL_VARCHAR, 0, 0, (SQLPOINTER) convert.string, &convert.param);
-			auto ptr = tll::scheme::read_pointer(field, data);
+			auto ptr = tll::scheme::read_pointer(convert.field, data);
 			if (!ptr)
 				return SQL_ERROR;
 			if (ptr->size == 0)
@@ -208,6 +300,17 @@ int sql_bind(SQLHSTMT sql, Prepared::Convert &convert, int idx, const tll::schem
 template <typename Buf>
 int sql_column(SQLHSTMT sql, Prepared::Convert &convert, int idx, const tll::scheme::Field *field, Buf data)
 {
+	switch (convert.type) {
+	case Prepared::Convert::None:
+		break;
+	case Prepared::Convert::Numeric:
+		return SQLBindCol(sql, idx, SQL_C_NUMERIC, (SQLPOINTER) &convert.numeric, sizeof(SQL_NUMERIC_STRUCT), &convert.param);
+	case Prepared::Convert::Timestamp:
+		return SQLBindCol(sql, idx, SQL_C_TYPE_TIMESTAMP, (SQLPOINTER) &convert.timestamp, sizeof(convert.timestamp), &convert.param);
+	case Prepared::Convert::String:
+		return SQLBindCol(sql, idx, SQL_C_CHAR, convert.string, 1024, &convert.param);
+	}
+
 	using tll::scheme::Field;
 	switch (field->type) {
 	case Field::Int8:
@@ -231,7 +334,7 @@ int sql_column(SQLHSTMT sql, Prepared::Convert &convert, int idx, const tll::sch
 		return SQLBindCol(sql, idx, SQL_C_DOUBLE, data.data(), sizeof(double), &convert.param);
 
 	case Field::Decimal128:
-		return SQLBindCol(sql, idx, SQL_C_NUMERIC, (SQLPOINTER) &convert.numeric, sizeof(SQL_NUMERIC_STRUCT), &convert.param);
+		return SQL_ERROR; // Already handled
 
 	case Field::Bytes:
 		if (field->sub_type == Field::ByteString) {
@@ -244,10 +347,7 @@ int sql_column(SQLHSTMT sql, Prepared::Convert &convert, int idx, const tll::sch
 	case Field::Array:
 		return SQL_ERROR;
 	case Field::Pointer:
-		if (field->type_ptr->type == Field::Int8 && field->sub_type == Field::ByteString) {
-			return SQLBindCol(sql, idx, SQL_C_CHAR, convert.string, 1024, &convert.param);
-		}
-		return SQL_ERROR;
+		return SQL_ERROR; // Already handled or unsupported
 	case Field::Union:
 		return SQL_ERROR;
 	}
@@ -492,6 +592,8 @@ int ODBC::_open(const ConstConfig &s)
 				ibuf++;
 			} else if (f.type == Field::Decimal128) {
 				conv.type = Prepared::Convert::Numeric;
+			} else if (f.sub_type == Field::TimePoint) {
+				conv.type = Prepared::Convert::Timestamp;
 			}
 		}
 	}
@@ -730,7 +832,7 @@ int ODBC::_post(const tll_msg_t *msg, int flags)
 			else
 				c.param = SQL_NULL_DATA;
 		}
-		if (sql_bind(insert.sql, c, idx++, c.field, view.view(c.field->offset)))
+		if (sql_bind(insert.sql, c, idx++, view.view(c.field->offset)))
 			return _log.fail(EINVAL, "Failed to bind field {}: {}", c.field->name, odbcerror(insert.sql));
 	}
 
@@ -969,6 +1071,21 @@ int ODBC::_process(long timeout, int flags)
 
 			_log.debug("Decimal: sign {}, prec {}, scale {} {} {} ", n.sign, n.precision, n.scale, u128.mantissa.hi, u128.mantissa.lo);
 			data.dataT<tll::util::Decimal128>()->pack(u128);
+		} else if (c.type == Prepared::Convert::Timestamp) {
+			using tll::scheme::Field;
+			switch (c.field->type) {
+			case Field::Int8: write_time<int8_t>(_log, c, data); break;
+			case Field::Int16: write_time<int16_t>(_log, c, data); break;
+			case Field::Int32: write_time<int32_t>(_log, c, data); break;
+			case Field::Int64: write_time<int64_t>(_log, c, data); break;
+			case Field::UInt8: write_time<uint8_t>(_log, c, data); break;
+			case Field::UInt16: write_time<uint16_t>(_log, c, data); break;
+			case Field::UInt32: write_time<uint32_t>(_log, c, data); break;
+			case Field::UInt64: write_time<uint64_t>(_log, c, data); break;
+			case Field::Double: write_time<double>(_log, c, data); break;
+			default:
+				return _log.fail(EINVAL, "Invalid field type for timestamp: {}", c.field->type);
+			}
 		}
 	}
 
