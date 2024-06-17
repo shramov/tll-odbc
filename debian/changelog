@@ -1,3 +1,9 @@
+tll-odbc (0.2.1) unstable; urgency=medium
+
+  * Support timestamp fields
+
+ -- Pavel Shramov <shramov@mexmat.net>  Mon, 17 Jun 2024 19:48:26 +0300
+
 tll-odbc (0.2.0) unstable; urgency=medium
 
   * Support for optional fields and NULL values from database
