@@ -452,14 +452,14 @@ class ODBC : public tll::channel::Base<ODBC>
 			auto sqlstate = view.view(1);
 			auto buf = view.view(1 + 5 + 2); //'\nHYXXX: ' string
 			auto r = SQLGetDiagRec(type, handle, i, sqlstate.dataT<SQLCHAR>(), &native, buf.dataT<SQLCHAR>(), buf.size(), &len);
-			if (r != SQL_SUCCESS && r != SQL_SUCCESS_WITH_INFO)
+			if (!SQL_SUCCEEDED(r))
 				break;
 			if (buf.size() < (size_t) len) {
 				buf.resize(len + 1);
 				len = 0;
 				r = SQLGetDiagRec(type, handle, i, sqlstate.dataT<SQLCHAR>(), &native, buf.dataT<SQLCHAR>(), buf.size(), &len);
 			}
-			if (r != SQL_SUCCESS && r != SQL_SUCCESS_WITH_INFO)
+			if (!SQL_SUCCEEDED(r))
 				break;
 			if (len == 0) // Postgres return empty error message instead of non-success error code
 				break;
@@ -551,7 +551,7 @@ int ODBC::_open(const ConstConfig &s)
 	char buf[SQL_MAX_OPTION_STRING_LENGTH];
 	SQLSMALLINT buflen = sizeof(buf);
 	if (auto r = SQLDriverConnect (_db, nullptr, (SQLCHAR *) _settings.data(), _settings.size(),
-                               (SQLCHAR *) buf, sizeof(buf), &buflen, SQL_DRIVER_NOPROMPT); r != SQL_SUCCESS && r != SQL_SUCCESS_WITH_INFO) {
+                               (SQLCHAR *) buf, sizeof(buf), &buflen, SQL_DRIVER_NOPROMPT); !SQL_SUCCEEDED(r)) {
 		return _log.fail(EINVAL, "Failed to connect: {}\n\tConnection string: {}", odbcerror(_db), _settings);
 	}
 	_log.info("Connection string: {}", buf); //std::string_view(buf, buflen));
@@ -1001,7 +1001,7 @@ int ODBC::_process(long timeout, int flags)
 		return _log.fail(EINVAL, "No active select statement");
 
 	auto r = SQLFetch(_select_sql);
-	if (r != SQL_SUCCESS && r != SQL_SUCCESS_WITH_INFO) {
+	if (!SQL_SUCCEEDED(r)) {
 		_select = nullptr;
 		SQLCloseCursor(_select_sql);
 		_select_sql.reset();
