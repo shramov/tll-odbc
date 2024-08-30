@@ -1022,14 +1022,10 @@ int ODBC::_process(long timeout, int flags)
 	auto view = tll::make_view(_buf);
 	_buf.resize(_select->message->size);
 
-	auto i = 0u;
-	if (_select->with_seq)
-		i++;
 	auto pmap = _select->message->pmap;
 	if (pmap)
 		memset(view.view(pmap->offset).data(), 0, pmap->size);
 	for (auto & c : _select->convert) {
-		i++;
 		if (c.param == SQL_NULL_DATA) {
 			memset(view.view(c.field->offset).data(), 0, c.field->size);
 			continue;
