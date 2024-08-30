@@ -821,7 +821,7 @@ int ODBC::_post(const tll_msg_t *msg, int flags)
 
 	int idx = 1;
 	if (insert.with_seq) {
-		if (auto r = SQLBindParam(insert.sql, idx++, SQL_C_SBIGINT, SQL_BIGINT, 0, 0, (SQLPOINTER) &msg->seq, &_seq_param); r != SQL_SUCCESS)
+		if (auto r = SQLBindParam(insert.sql, idx++, SQL_C_SBIGINT, SQL_BIGINT, 0, 0, (SQLPOINTER) &msg->seq, &_seq_param); !SQL_SUCCEEDED(r))
 			return _log.fail(EINVAL, "Failed to bind seq: {}", odbcerror(insert.sql));
 	}
 	auto pmap = insert.message->pmap;
@@ -853,7 +853,7 @@ int ODBC::_post(const tll_msg_t *msg, int flags)
 
 		idx = 1;
 		if (_select->with_seq) {
-			if (auto r = SQLBindCol(_select_sql, idx++, SQL_C_SBIGINT, &_msg.seq, sizeof(_msg.seq), &_seq_param); r != SQL_SUCCESS)
+			if (auto r = SQLBindCol(_select_sql, idx++, SQL_C_SBIGINT, &_msg.seq, sizeof(_msg.seq), &_seq_param); !SQL_SUCCEEDED(r))
 				return _log.fail(EINVAL, "Failed to bind seq column: {}", odbcerror(_select_sql));
 		}
 		for (auto & c : _select->convert) {
@@ -983,7 +983,7 @@ int ODBC::_post_control(const tll_msg_t *msg, int flags)
 
 	idx = 1;
 	if (_select->with_seq) {
-		if (auto r = SQLBindCol(_select_sql, idx++, SQL_C_SBIGINT, &_msg.seq, sizeof(_msg.seq), &_seq_param); r != SQL_SUCCESS)
+		if (auto r = SQLBindCol(_select_sql, idx++, SQL_C_SBIGINT, &_msg.seq, sizeof(_msg.seq), &_seq_param); !SQL_SUCCEEDED(r))
 			return _log.fail(EINVAL, "Failed to bind seq column: {}", odbcerror(_select_sql));
 	}
 	for (auto & c : select.convert) {
