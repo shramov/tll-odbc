@@ -869,7 +869,7 @@ int ODBC::_post(const tll_msg_t *msg, int flags)
 
 int ODBC::_execute(query_ptr_t &query, std::string_view message)
 {
-	if (auto r = SQLExecute(query); r != SQL_SUCCESS) {
+	if (auto r = SQLExecute(query); !SQL_SUCCEEDED(r)) {
 		auto error = odbcerror(query);
 		if (_sqlstate == "08S01") // Fatal connection error
 			return state_fail(EINVAL, "Failed to {} data: {}", message, error);
