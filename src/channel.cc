@@ -12,6 +12,7 @@
 #include <sqlext.h>
 #include <time.h>
 
+#include "heartbeat.h"
 #include "odbc-scheme.h"
 
 using Channel = tll::Channel;
@@ -1109,6 +1110,7 @@ int ODBC::_process(long timeout, int flags)
 	return 0;
 }
 
+TLL_DEFINE_IMPL(HeartBeat);
 TLL_DEFINE_IMPL(ODBC);
 
-TLL_DEFINE_MODULE(ODBC);
+TLL_DEFINE_MODULE(ODBC, HeartBeat);
