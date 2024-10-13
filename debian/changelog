@@ -1,6 +1,6 @@
 tll-odbc (0.2.2) unstable; urgency=medium
 
-  * Do not fail on warnings from database 
+  * Do not fail on warnings from database
 
  -- Pavel Shramov <shramov@mexmat.net>  Fri, 30 Aug 2024 13:03:43 +0300
 
