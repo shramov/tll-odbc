@@ -836,8 +836,19 @@ int ODBC::_post(const tll_msg_t *msg, int flags)
 			return _log.fail(EINVAL, "Failed to bind field {}: {}", c.field->name, odbcerror(insert.sql));
 	}
 
-	if (auto r = _execute(insert.sql, "insert"); r)
+	if (auto r = _execute(insert.sql, "insert"); r) {
+		if (r == ENOENT) {
+			if (!insert.output)
+				return 0;
+			tll_msg_t msg = {
+				.type = TLL_MESSAGE_CONTROL,
+				.msgid = odbc_scheme::EndOfData::meta_id(),
+			};
+			_callback(&msg);
+			return 0;
+		}
 		return r;
+	}
 
 	if (!insert.output)
 		return 0;
@@ -873,6 +884,10 @@ int ODBC::_execute(query_ptr_t &query, std::string_view message)
 		auto error = odbcerror(query);
 		if (_sqlstate == "08S01") // Fatal connection error
 			return state_fail(EINVAL, "Failed to {} data: {}", message, error);
+		if (r == SQL_NO_DATA) {
+			_log.debug("Query returned no data (SQL_NO_DATA)");
+			return ENOENT;
+		}
 		if (r == SQL_NEED_DATA)
 			return _log.fail(EINVAL, "Failed to {}: SQL_NEED_DATA: {}", message, error);
 		return _log.fail(EINVAL, "Failed to {} data: {}", message, error);
