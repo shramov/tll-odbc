@@ -14,7 +14,8 @@
 
 #include "odbc-scheme.h"
 
-using namespace tll;
+using Channel = tll::Channel;
+namespace dcaps { using namespace tll::dcaps; }
 
 template <SQLSMALLINT Type>
 struct SQLHandle
@@ -530,7 +531,7 @@ int ODBC::_init(const Channel::Url &url, Channel * master)
 	return Base::_init(url, master);
 }
 
-int ODBC::_open(const ConstConfig &s)
+int ODBC::_open(const tll::ConstConfig &s)
 {
 	if (auto r = Base::_open(s); r)
 		return _log.fail(r, "Failed to open ODBC database");
@@ -923,7 +924,7 @@ T * lookup(T * list, std::string_view id)
 
 int ODBC::_post_control(const tll_msg_t *msg, int flags)
 {
-	if (internal.caps & caps::Output) {
+	if (internal.caps & tll::caps::Output) {
 		// Handle begin/commit/rollback
 		return 0;
 	}
