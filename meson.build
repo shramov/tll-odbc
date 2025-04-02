@@ -1,4 +1,4 @@
-project('tll-odbc', 'cpp', version: '0.0.0', default_options: ['cpp_std=c++17', 'werror=true', 'optimization=2'])
+project('tll-odbc', 'cpp', version: '0.2.3', default_options: ['cpp_std=c++17', 'werror=true', 'optimization=2'])
 
 include = [include_directories('src')]
 

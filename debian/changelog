@@ -1,3 +1,10 @@
+tll-odbc (0.2.3) unstable; urgency=medium
+
+  * heartbeat: Prefix that feeds child with heartbeat messages
+  * odbc: Handle SQL_NO_DATA in read-write statements
+
+ -- Pavel Shramov <shramov@mexmat.net>  Wed, 02 Apr 2025 18:02:45 +0300
+
 tll-odbc (0.2.2) unstable; urgency=medium
 
   * Do not fail on warnings from database
