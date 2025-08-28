@@ -18,6 +18,21 @@
 using Channel = tll::Channel;
 namespace dcaps { using namespace tll::dcaps; }
 
+enum class Template { None, Insert, Function, Procedure };
+template <>
+struct tll::conv::parse<Template>
+{
+        static result_t<Template> to_any(std::string_view s)
+        {
+                return tll::conv::select(s, std::map<std::string_view, Template> {
+			{"none", Template::None},
+			{"insert", Template::Insert},
+			{"function", Template::Function},
+			{"procedure", Template::Procedure}
+		});
+        }
+};
+
 template <SQLSMALLINT Type>
 struct SQLHandle
 {
@@ -379,6 +394,8 @@ class ODBC : public tll::channel::Base<ODBC>
 	SQLLEN _seq_param;
 	tll_msg_t _msg = {};
 
+	Template _default_template = Template::Insert;
+
 	enum class Index { No, Yes, Unique } _seq_index = Index::Unique;
 	enum class Create { No, Checked, Always } _create_mode = Create::Checked;
 	enum class Quotes { SQLite, PSQL, Sybase, None } _quotes = Quotes::PSQL;
@@ -492,6 +509,7 @@ int ODBC::_init(const Channel::Url &url, Channel * master)
 			settings.emplace(k, v);
 	}
 
+	_default_template = reader.getT("default-template", _default_template);
 	_create_mode = reader.getT("create-mode", Create::No, {{"no", Create::No}, {"checked", Create::Checked}, {"always", Create::Always}});
 	_quotes = reader.getT("quote-mode", Quotes::PSQL, {{"sqlite", Quotes::SQLite}, {"psql", Quotes::PSQL}, {"sybase", Quotes::Sybase}, {"none", Quotes::None}});
 	_function_mode = reader.getT("function-mode", Function::Fields, {{"fields", Function::Fields}, {"empty", Function::Empty}});
@@ -703,15 +721,14 @@ int ODBC::_create_query(const tll::scheme::Message *msg)
 		names.push_back(_quoted(f.name));
 	}
 
-	enum Template { None, Insert, Function, Procedure };
-	auto tmpl = reader.getT("sql.template", Insert, {{"none", None}, {"insert", Insert}, {"function", Function}, {"procedure", Procedure}});
+	auto tmpl = reader.getT("sql.template", Template::Insert);
 	auto query = reader.getT("sql.query", std::string());
 	auto output = reader.getT("sql.output", std::string());
 
 	if (query.size())
-		tmpl = None;
+		tmpl = Template::None;
 
-	auto create = reader.getT("sql.create", tmpl == Insert);
+	auto create = reader.getT("sql.create", tmpl == Template::Insert);
 
 	if (!reader)
 		return _log.fail(EINVAL, "Failed to read SQL options from message '{}': {}", msg->name, reader.error());
@@ -724,15 +741,15 @@ int ODBC::_create_query(const tll::scheme::Message *msg)
 	}
 
 	switch (tmpl) {
-	case None:
+	case Template::None:
 		break;
-	case Insert:
+	case Template::Insert:
 		query = fmt::format("INSERT INTO {}({}) VALUES ", _quoted(table), join(names.begin(), names.end()));
 		for (auto & i : names)
 			i = "?";
 		query += fmt::format("({})", join(names.begin(), names.end()));
 		break;
-	case Function: {
+	case Template::Function: {
 		if (!outmsg)
 			return _log.fail(EINVAL, "Function template '{}' without output message", msg->name);
 		std::list<std::string> outnames;
@@ -750,7 +767,7 @@ int ODBC::_create_query(const tll::scheme::Message *msg)
 		query += fmt::format(" {}({})", _quoted(table), join(names.begin(), names.end()));
 		break;
 	}
-	case Procedure:
+	case Template::Procedure:
 		for (auto & i : names)
 			i = "?";
 		query = fmt::format("CALL {}({})", _quoted(table), join(names.begin(), names.end()));
