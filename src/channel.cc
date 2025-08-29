@@ -433,6 +433,14 @@ class ODBC : public tll::channel::Base<ODBC>
 		return std::string(name);
 	}
 
+	std::string _quoted_table(std::string_view name)
+	{
+		auto dot = name.find('.');
+		if (dot == name.npos)
+			return _quoted(name);
+		return _quoted(name.substr(0, dot)) + "." + _quoted(name.substr(dot + 1));
+	}
+
 	std::string_view _if_not_exists()
 	{
 		if (_create_mode == Create::Checked)
@@ -672,7 +680,7 @@ int ODBC::_create_table(std::string_view table, const tll::scheme::Message * msg
 		}
 	}
 
-	sql = _prepare(fmt::format("CREATE TABLE {}{} ({})", _if_not_exists(), _quoted(table), join(fields.begin(), fields.end())));
+	sql = _prepare(fmt::format("CREATE TABLE {}{} ({})", _if_not_exists(), _quoted_table(table), join(fields.begin(), fields.end())));
 	if (!sql)
 		return _log.fail(EINVAL, "Failed to prepare CREATE statement");
 
@@ -744,7 +752,7 @@ int ODBC::_create_query(const tll::scheme::Message *msg)
 	case Template::None:
 		break;
 	case Template::Insert:
-		query = fmt::format("INSERT INTO {}({}) VALUES ", _quoted(table), join(names.begin(), names.end()));
+		query = fmt::format("INSERT INTO {}({}) VALUES ", _quoted_table(table), join(names.begin(), names.end()));
 		for (auto & i : names)
 			i = "?";
 		query += fmt::format("({})", join(names.begin(), names.end()));
@@ -764,13 +772,13 @@ int ODBC::_create_query(const tll::scheme::Message *msg)
 			query = fmt::format("SELECT {} FROM", join(outnames.begin(), outnames.end()));
 		else
 			query = "SELECT";
-		query += fmt::format(" {}({})", _quoted(table), join(names.begin(), names.end()));
+		query += fmt::format(" {}({})", _quoted_table(table), join(names.begin(), names.end()));
 		break;
 	}
 	case Template::Procedure:
 		for (auto & i : names)
 			i = "?";
-		query = fmt::format("CALL {}({})", _quoted(table), join(names.begin(), names.end()));
+		query = fmt::format("CALL {}({})", _quoted_table(table), join(names.begin(), names.end()));
 		break;
 	}
 
