@@ -404,9 +404,8 @@ def test_default_template(context, odbcini):
     db = pyodbc.connect(**odbcini) #{k.split('.')[-1]: v for k,v in odbcini.items()}
     with db.cursor() as c:
         c.execute('DROP TABLE IF EXISTS "Data"')
-        c.execute(f'CREATE TABLE "Data" ("_tll_seq" INTEGER NOT NULL, "f0" INTEGER NOT NULL)')
 
-    c = Accum('odbc://;name=odbc;create-mode=no;default-template=none', scheme=scheme, dump='yes', context=context, **odbcini)
+    c = Accum('odbc://;name=odbc;create-mode=checked;default-template=none', scheme=scheme, dump='yes', context=context, **odbcini)
     c.open()
     c.post({'f0': 1000}, name='Data', seq=100)
 

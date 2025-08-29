@@ -721,7 +721,7 @@ int ODBC::_create_query(const tll::scheme::Message *msg)
 		names.push_back(_quoted(f.name));
 	}
 
-	auto tmpl = reader.getT("sql.template", Template::Insert);
+	auto tmpl = reader.getT("sql.template", _default_template);
 	auto query = reader.getT("sql.query", std::string());
 	auto output = reader.getT("sql.output", std::string());
 
