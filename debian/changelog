@@ -1,3 +1,10 @@
+tll-odbc (0.2.4) unstable; urgency=medium
+
+  * odbc: Fix incomplete support for default template
+  * odbc: Correctly quote table names with dot
+
+ -- Pavel Shramov <shramov@mexmat.net>  Tue, 16 Sep 2025 09:42:22 +0300
+
 tll-odbc (0.2.3) unstable; urgency=medium
 
   * heartbeat: Prefix that feeds child with heartbeat messages
