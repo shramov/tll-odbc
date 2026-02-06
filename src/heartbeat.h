@@ -69,7 +69,7 @@ class HeartBeat : public tll::channel::Prefix<HeartBeat>
 	{
 		_timer->close();
 		_msg = {};
-		return Base::_on_active();
+		return Base::_on_closing();
 	}
 
 	int _on_timer(const tll::Channel *, const tll_msg_t *)

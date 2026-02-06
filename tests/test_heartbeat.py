@@ -36,3 +36,6 @@ def test_timestamp(context):
         s.post({'f0': 10}, name='Data')
         c.children[-1].process()
     assert [m.msgid for m in s.result] == []
+
+    c.close()
+    assert c.state == c.State.Closed
