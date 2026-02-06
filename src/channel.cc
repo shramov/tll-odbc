@@ -877,8 +877,10 @@ int ODBC::_post(const tll_msg_t *msg, int flags)
 		return r;
 	}
 
-	if (!insert.output)
+	if (!insert.output) {
+		SQLCloseCursor(insert.sql);
 		return 0;
+	}
 
 	{
 		_select_sql = insert.sql;
