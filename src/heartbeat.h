@@ -78,7 +78,8 @@ class HeartBeat : public tll::channel::Prefix<HeartBeat>
 		if (_last + _timeout > now)
 			return 0;
 		_last = now;
-		_child->post(&_msg);
+		if (auto r = _child->post(&_msg); r)
+			return state_fail(r, "Heartbeat post failed");
 		return 0;
 	}
 
