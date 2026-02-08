@@ -349,9 +349,12 @@ def test_null_insert(context, db, odbcini):
         ])
 def test_timestamp(context, db, odbcini, t, prec, value):
     value = TimePoint.from_str(value)
-    if db.getinfo(pyodbc.SQL_DBMS_NAME) == 'SQLite':
+    if (name := db.getinfo(pyodbc.SQL_DBMS_NAME)) == 'SQLite':
         # SQLite3 stores only 3 digits
         value = TimePoint(value, 'ms', type=int)
+    elif name == 'PostgreSQL':
+        # PostgreSQL stores only 6 digits
+        value = TimePoint(value, 'us', type=int)
 
     dbname = "Data"
     scheme = f'''yamls://
@@ -381,9 +384,9 @@ def test_timestamp(context, db, odbcini, t, prec, value):
     r = c.unpack(c.result[-1]).f0
 
     if t == 'double':
-        pytest.approx(value.seconds, 0.000001) == r.seconds
+        assert r.seconds == pytest.approx(value.seconds, abs=0.001)
     else:
-        r == value
+        assert r == value
 
 def test_default_template(context, db, odbcini):
     scheme = '''yamls://
