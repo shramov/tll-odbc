@@ -14,7 +14,7 @@ Name quoting
 Number of table and field name quoting methods are supported:
 
 * ``sqlite``: quote with backticks as ```table```;
-* ``psql``: quote with double qoutes as ``"table"``;
+* ``psql``: quote with double quotes as ``"table"``;
 * ``sybase``: quote with square brackets as ``[table]``;
 
 Method is selected with ``quote-mode`` channel parameter.

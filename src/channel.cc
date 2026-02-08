@@ -599,7 +599,7 @@ int ODBC::_open(const tll::ConstConfig &s)
 		if (m.output_message) {
 			auto it = _messages.find(m.output_message->msgid);
 			if (it == _messages.end())
-				return _log.fail(EINVAL, "Ouput message {} was not prepared", m.output_message->name);
+				return _log.fail(EINVAL, "Output message {} was not prepared", m.output_message->name);
 			m.output = &it->second;
 		}
 		auto ibuf = _string_buffers.begin();

@@ -14,4 +14,4 @@ Depends: ${shlibs:Depends}, ${misc:Depends}
 Pre-Depends: ${misc:Pre-Depends}
 Multi-Arch: same
 Description: ODBC channel for TLL
- Package containes read-write database channel using ODBC API
+ Package contains read-write database channel using ODBC API
