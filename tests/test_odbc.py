@@ -11,6 +11,12 @@ from tll.error import TLLError
 from tll.test_util import Accum
 from tll.chrono import TimePoint
 
+@pytest.fixture
+def db(odbcini):
+    r = pyodbc.connect(**odbcini)
+    yield r
+    r.close()
+
 SCHEME = '''yamls://
 - name: Data
   id: 10
@@ -33,8 +39,8 @@ SCHEME = '''yamls://
         ('string, options.sql.column-type: "VARCHAR(8)"', 'string'),
         ('byte32, options.type: string', 'string'),
         ])
-def test_field(context, odbcini, t, value):
-    if odbcini.get('driver', '') == 'SQLite3' and t == 'decimal128':
+def test_field(context, db, odbcini, t, value):
+    if db.getinfo(pyodbc.SQL_DBMS_NAME) == 'SQLite' and t == 'decimal128':
         pytest.skip("Decimal128 not supported on SQLite3")
 
     dbname = "Data"
@@ -45,7 +51,6 @@ def test_field(context, odbcini, t, value):
         - {{name: f0, type: {t}}}
     '''
 
-    db = pyodbc.connect(**odbcini) #{k.split('.')[-1]: v for k,v in odbcini.items()}
     with db.cursor() as c:
         c.execute('DROP TABLE IF EXISTS "Data"')
 
@@ -75,7 +80,7 @@ def test_field(context, odbcini, t, value):
         ([{'field': 'f0', 'op': 'GT', 'value': {'i': 5000}}, {'field': 'f1', 'op': 'LE', 'value': {'f': 500}}], []),
         ([{'field': 'f2', 'op': 'EQ', 'value': {'s': '2'}}], [2]),
         ])
-def test_query(context, odbcini, query, result):
+def test_query(context, db, odbcini, query, result):
     scheme = '''yamls://
     - name: Query
       id: 10
@@ -85,7 +90,6 @@ def test_query(context, odbcini, query, result):
         - {name: f2, type: string}
     '''
 
-    db = pyodbc.connect(**odbcini) #{k.split('.')[-1]: v for k,v in odbcini.items()}
     with db.cursor() as c:
         c.execute(f'DROP TABLE IF EXISTS "Query"')
 
@@ -105,7 +109,7 @@ def test_query(context, odbcini, query, result):
     for m, r in zip(s.result, result):
         assert s.unpack(m).as_dict() == {'f0': 1000 * r, 'f1': 100.5 * r, 'f2': str(r)}
 
-def test_function(context, odbcini):
+def test_function(context, db, odbcini):
     scheme = '''yamls://
     - name: Input
       options.sql.table: TestFunction
@@ -124,9 +128,8 @@ def test_function(context, odbcini):
         - {name: a, type: double}
         - {name: b, type: int32}
     '''
-    if odbcini.get('driver', '') == 'SQLite3':
+    if db.getinfo(pyodbc.SQL_DBMS_NAME) == 'SQLite':
         pytest.skip("Functions not supported in SQLite3")
-    db = pyodbc.connect(**odbcini) #{k.split('.')[-1]: v for k,v in odbcini.items()}
     with db.cursor() as c:
         c.execute(f'DROP FUNCTION IF EXISTS "TestFunction"')
         c.execute('''
@@ -143,7 +146,7 @@ LANGUAGE SQL
     assert [(m.type, m.msgid) for m in c.result] == [(c.Type.Data, 20), (c.Type.Control, 50)]
     assert c.unpack(c.result[0]).as_dict() == {'a': 123.45, 'b': 10}
 
-def test_procedure(context, odbcini):
+def test_procedure(context, db, odbcini):
     scheme = '''yamls://
     - name: Output
       options.sql.template: none
@@ -160,9 +163,8 @@ def test_procedure(context, odbcini):
         - {name: a, type: int32}
         - {name: b, type: double}
     '''
-    if odbcini.get('driver', '') == 'SQLite3':
+    if db.getinfo(pyodbc.SQL_DBMS_NAME) == 'SQLite':
         pytest.skip("Procedures not supported in SQLite3")
-    db = pyodbc.connect(**odbcini) #{k.split('.')[-1]: v for k,v in odbcini.items()}
     with db.cursor() as c:
         c.execute(f'DROP TABLE IF EXISTS "Output"')
 
@@ -190,7 +192,7 @@ $$
     assert c.unpack(c.result[1]).as_dict() == {'a': 246.9, 'b': 20}
 
 @pytest.mark.parametrize("mode", ["no", "checked", "always"])
-def test_create(context, odbcini, mode):
+def test_create(context, db, odbcini, mode):
     dbname = "Data"
     scheme = f'''yamls://
     - name: {dbname}
@@ -199,7 +201,6 @@ def test_create(context, odbcini, mode):
         - {{name: f0, type: int32}}
     '''
 
-    db = pyodbc.connect(**odbcini) #{k.split('.')[-1]: v for k,v in odbcini.items()}
     def drop(db):
         with db.cursor() as c:
             c.execute(f'DROP TABLE IF EXISTS "{dbname}"')
@@ -222,7 +223,7 @@ def test_create(context, odbcini, mode):
 
     assert [tuple(r) for r in db.cursor().execute(f'SELECT * FROM "{dbname}"')] == [(100, 123)]
 
-def test_raw(context, odbcini):
+def test_raw(context, db, odbcini):
     dbname = "Data"
     scheme = f'''yamls://
     - name: Insert
@@ -241,7 +242,6 @@ def test_raw(context, odbcini):
         - {{name: f0, type: int32}}
     '''
 
-    db = pyodbc.connect(**odbcini) #{k.split('.')[-1]: v for k,v in odbcini.items()}
     with db.cursor() as c:
         c.execute('DROP TABLE IF EXISTS "Data"')
 
@@ -267,7 +267,7 @@ def test_raw(context, odbcini):
 
     assert c.unpack(c.result[0]).as_dict() == {'f0': 10, 'f1': 12.34}
 
-def test_none(context, odbcini):
+def test_none(context, db, odbcini):
     scheme = '''yamls://
     - name: Ignore
       options.sql.template: none
@@ -281,7 +281,7 @@ def test_none(context, odbcini):
     c.open()
     c.post({'f0': 30}, name='Ignore')
 
-def test_null(context, odbcini):
+def test_null(context, db, odbcini):
     dbname = "Data"
     scheme = '''yamls://
     - name: Data
@@ -294,7 +294,6 @@ def test_null(context, odbcini):
         - {name: f2, type: int64, options.optional: yes}
     '''
 
-    db = pyodbc.connect(**odbcini)
     with db.cursor() as c:
         c.execute(f'DROP TABLE IF EXISTS "{dbname}"')
         c.execute(f'CREATE TABLE "{dbname}" (f0 INTEGER, f1 DOUBLE PRECISION, f2 VARCHAR(255))')
@@ -311,7 +310,7 @@ def test_null(context, odbcini):
     assert [c.unpack(m).as_dict() for m in c.result[:-1]] == [{'f0': 10}, {'f0': 0, 'f1': 123.456}, {'f0': 0, 'f2': 1234}]
     assert [(m.type, m.msgid) for m in c.result[-1:]] == [(c.Type.Control, c.scheme_control.messages.EndOfData.msgid)]
 
-def test_null_insert(context, odbcini):
+def test_null_insert(context, db, odbcini):
     dbname = "Data"
     scheme = '''yamls://
     - name: Data
@@ -325,7 +324,6 @@ def test_null_insert(context, odbcini):
         - {name: f2, type: byte16, options.type: string, options.optional: yes}
     '''
 
-    db = pyodbc.connect(**odbcini)
     with db.cursor() as c:
         c.execute(f'DROP TABLE IF EXISTS "{dbname}"')
 
@@ -349,9 +347,9 @@ def test_null_insert(context, odbcini):
         ('int64', 'ns', '2000-01-02T03:04:05.678901234'),
         ('double', 's', '2000-01-02T03:04:05.678'),
         ])
-def test_timestamp(context, odbcini, t, prec, value):
+def test_timestamp(context, db, odbcini, t, prec, value):
     value = TimePoint.from_str(value)
-    if odbcini.get('driver', '') == 'SQLite3':
+    if db.getinfo(pyodbc.SQL_DBMS_NAME) == 'SQLite':
         # SQLite3 stores only 3 digits
         value = TimePoint(value, 'ms', type=int)
 
@@ -364,7 +362,6 @@ def test_timestamp(context, odbcini, t, prec, value):
         - {{name: f0, type: {t}, options.type: time_point, options.resolution: {prec}}}
     '''
 
-    db = pyodbc.connect(**odbcini) #{k.split('.')[-1]: v for k,v in odbcini.items()}
     with db.cursor() as c:
         c.execute('DROP TABLE IF EXISTS "Data"')
 
@@ -388,7 +385,7 @@ def test_timestamp(context, odbcini, t, prec, value):
     else:
         r == value
 
-def test_default_template(context, odbcini):
+def test_default_template(context, db, odbcini):
     scheme = '''yamls://
     - name: Data
       options.sql.template: insert
@@ -401,7 +398,6 @@ def test_default_template(context, odbcini):
         - {name: f0, type: '*int32'}
     '''
 
-    db = pyodbc.connect(**odbcini) #{k.split('.')[-1]: v for k,v in odbcini.items()}
     with db.cursor() as c:
         c.execute('DROP TABLE IF EXISTS "Data"')
 
