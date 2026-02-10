@@ -631,6 +631,7 @@ int ODBC::_open(const tll::ConstConfig &s)
 
 int ODBC::_close()
 {
+	_select = nullptr;
 	_messages.clear();
 	_select_sql.reset();
 	if (_db.ptr)
