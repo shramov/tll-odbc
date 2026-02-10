@@ -1046,6 +1046,7 @@ int ODBC::_process(long timeout, int flags)
 
 	auto r = SQLFetch(_select_sql);
 	if (!SQL_SUCCEEDED(r)) {
+		auto error = odbcerror(_select_sql);
 		_select = nullptr;
 		SQLCloseCursor(_select_sql);
 		_select_sql.reset();
@@ -1057,7 +1058,6 @@ int ODBC::_process(long timeout, int flags)
 			_callback(&msg);
 			return 0;
 		}
-		auto error = odbcerror(_select_sql);
 		if (_sqlstate == "08S01")
 			return state_fail(EINVAL, "Failed to fetch data: {}", error);
 		return _log.fail(EINVAL, "Failed to fetch data: {}", error);
