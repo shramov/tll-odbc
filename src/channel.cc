@@ -1114,15 +1114,15 @@ int ODBC::_process(long timeout, int flags)
 		} else if (c.type == Prepared::Convert::Timestamp) {
 			using tll::scheme::Field;
 			switch (c.field->type) {
-			case Field::Int8: write_time<int8_t>(_log, c, data); break;
-			case Field::Int16: write_time<int16_t>(_log, c, data); break;
-			case Field::Int32: write_time<int32_t>(_log, c, data); break;
-			case Field::Int64: write_time<int64_t>(_log, c, data); break;
-			case Field::UInt8: write_time<uint8_t>(_log, c, data); break;
-			case Field::UInt16: write_time<uint16_t>(_log, c, data); break;
-			case Field::UInt32: write_time<uint32_t>(_log, c, data); break;
-			case Field::UInt64: write_time<uint64_t>(_log, c, data); break;
-			case Field::Double: write_time<double>(_log, c, data); break;
+			case Field::Int8: if (auto r = write_time<int8_t>(_log, c, data); r) return r; break;
+			case Field::Int16: if (auto r = write_time<int16_t>(_log, c, data); r) return r; break;
+			case Field::Int32: if (auto r = write_time<int32_t>(_log, c, data); r) return r; break;
+			case Field::Int64: if (auto r = write_time<int64_t>(_log, c, data); r) return r; break;
+			case Field::UInt8: if (auto r = write_time<uint8_t>(_log, c, data); r) return r; break;
+			case Field::UInt16: if (auto r = write_time<uint16_t>(_log, c, data); r) return r; break;
+			case Field::UInt32: if (auto r = write_time<uint32_t>(_log, c, data); r) return r; break;
+			case Field::UInt64: if (auto r = write_time<uint64_t>(_log, c, data); r) return r; break;
+			case Field::Double: if (auto r = write_time<double>(_log, c, data); r) return r; break;
 			default:
 				return _log.fail(EINVAL, "Invalid field type for timestamp: {}", c.field->type);
 			}
