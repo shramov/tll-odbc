@@ -402,6 +402,8 @@ class ODBC : public tll::channel::Base<ODBC>
 	enum class Quotes { SQLite, PSQL, Sybase, None } _quotes = Quotes::PSQL;
 	enum class Function { Fields, Empty } _function_mode = Function::Fields;
 
+	bool _strict = true;
+
  public:
 	static constexpr auto process_policy() { return ProcessPolicy::Custom; }
 
@@ -522,6 +524,7 @@ int ODBC::_init(const Channel::Url &url, Channel * master)
 	_create_mode = reader.getT("create-mode", Create::No, {{"no", Create::No}, {"checked", Create::Checked}, {"always", Create::Always}});
 	_quotes = reader.getT("quote-mode", Quotes::PSQL, {{"sqlite", Quotes::SQLite}, {"psql", Quotes::PSQL}, {"sybase", Quotes::Sybase}, {"none", Quotes::None}});
 	_function_mode = reader.getT("function-mode", Function::Fields, {{"fields", Function::Fields}, {"empty", Function::Empty}});
+	_strict = reader.getT("strict", true);
 	if (!reader)
 		return _log.fail(EINVAL, "Invalid url: {}", reader.error());
 
@@ -591,8 +594,11 @@ int ODBC::_open(const tll::ConstConfig &s)
 			continue;
 		}
 
-		if (_create_query(&m))
-			return _log.fail(EINVAL, "Failed to prepare SQL statement for '{}'", m.name);
+		if (_create_query(&m)) {
+			if (_strict)
+				return _log.fail(EINVAL, "Failed to prepare SQL statement for '{}'", m.name);
+			_log.warning("Failed to prepare SQL statement for '{}'", m.name);
+		}
 	}
 
 	for (auto & [_, m] : _messages) {

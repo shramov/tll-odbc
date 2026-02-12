@@ -410,3 +410,26 @@ def test_default_template(context, db, odbcini):
     c.post({'f0': 1000}, name='Data', seq=100)
 
     assert [tuple(r) for r in db.cursor().execute(f'SELECT * FROM "Data"')] == [(100, 1000)]
+
+def test_non_strict(context, db, odbcini):
+    scheme = '''yamls://
+    - name: Data
+      options.sql.template: insert
+      id: 10
+      fields:
+        - {name: f0, type: int32}
+    - name: List
+      id: 20
+      options.sql.template: insert
+      fields:
+        - {name: f0, type: '*int32'}
+    '''
+
+    with db.cursor() as c:
+        c.execute('DROP TABLE IF EXISTS "Data"')
+
+    c = Accum('odbc://;name=odbc;create-mode=checked', strict='no', scheme=scheme, dump='yes', context=context, **odbcini)
+    c.open()
+    c.post({'f0': 1000}, name='Data', seq=100)
+
+    assert [tuple(r) for r in db.cursor().execute(f'SELECT * FROM "Data"')] == [(100, 1000)]
