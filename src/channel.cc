@@ -1115,7 +1115,9 @@ int ODBC::_process(long timeout, int flags)
 			memcpy(fview.data(), c.string, size);
 			*fview.view(size).template dataT<char>() = '\0';
 		} else if (c.type == Prepared::Convert::String && c.field->type == tll::scheme::Field::Bytes) {
-			memcpy(data.data(), c.string, c.field->size);
+			auto size = strnlen(c.string, c.field->size);
+			memcpy(data.data(), c.string, size);
+			memset(data.view(size).data(), 0, c.field->size - size);
 		} else if (c.type == Prepared::Convert::Numeric) {
 			auto & n = c.numeric;
 			tll::util::Decimal128::Unpacked u128;
