@@ -38,6 +38,7 @@ SCHEME = '''yamls://
         ('decimal128', Decimal('123.456')),
         ('string, options.sql.column-type: "VARCHAR(8)"', 'string'),
         ('byte32, options.type: string', 'string'),
+        ('byte16, options.type: string, options.sql.column-type: "VARCHAR(16)"', '0123456789abcdef'),
         ])
 def test_field(context, db, odbcini, t, value):
     if db.getinfo(pyodbc.SQL_DBMS_NAME) == 'SQLite' and t == 'decimal128':

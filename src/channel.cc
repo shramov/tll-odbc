@@ -69,10 +69,14 @@ struct Prepared
 		SQLLEN param;
 		union {
 			int64_t integer;
-			char * string;
+			struct {
+				char * string;
+				size_t string_size;
+			};
 			SQL_NUMERIC_STRUCT numeric;
 			SQL_TIMESTAMP_STRUCT timestamp;
 		};
+		std::unique_ptr<char []> bytestring_data;
 	};
 	std::vector<Convert> convert;
 	bool with_seq;
@@ -325,7 +329,7 @@ int sql_column(SQLHSTMT sql, Prepared::Convert &convert, int idx, const tll::sch
 	case Prepared::Convert::Timestamp:
 		return SQLBindCol(sql, idx, SQL_C_TYPE_TIMESTAMP, (SQLPOINTER) &convert.timestamp, sizeof(convert.timestamp), &convert.param);
 	case Prepared::Convert::String:
-		return SQLBindCol(sql, idx, SQL_C_CHAR, convert.string, 1024, &convert.param);
+		return SQLBindCol(sql, idx, SQL_C_CHAR, convert.string, convert.string_size, &convert.param);
 	}
 
 	using tll::scheme::Field;
@@ -354,10 +358,7 @@ int sql_column(SQLHSTMT sql, Prepared::Convert &convert, int idx, const tll::sch
 		return SQL_ERROR; // Already handled
 
 	case Field::Bytes:
-		if (field->sub_type == Field::ByteString) {
-			return SQLBindCol(sql, idx, SQL_C_CHAR, data.data(), field->size, &convert.param);
-		}
-		return SQL_ERROR;
+		return SQL_ERROR; // Already handled or unsupported
 
 	case Field::Message:
 		return SQL_ERROR;
@@ -617,7 +618,13 @@ int ODBC::_open(const tll::ConstConfig &s)
 				}
 				ibuf->resize(1024);
 				conv.string = ibuf->data();
+				conv.string_size = ibuf->size();
 				ibuf++;
+			} else if (f.type == Field::Bytes && f.sub_type == Field::ByteString) {
+				conv.type = Prepared::Convert::String;
+				conv.string_size = f.size + 1;
+				conv.bytestring_data.reset(new char[conv.string_size]);
+				conv.string = conv.bytestring_data.get();
 			} else if (f.type == Field::Decimal128) {
 				conv.type = Prepared::Convert::Numeric;
 			} else if (f.sub_type == Field::TimePoint) {
@@ -1081,7 +1088,7 @@ int ODBC::_process(long timeout, int flags)
 		if (c.type == Prepared::Convert::None)
 			continue;
 		auto data = view.view(c.field->offset);
-		if (c.type == Prepared::Convert::String) {
+		if (c.type == Prepared::Convert::String && c.field->type == tll::scheme::Field::Pointer) {
 			auto size = c.param;
 
 			tll::scheme::generic_offset_ptr_t ptr = {};
@@ -1101,6 +1108,8 @@ int ODBC::_process(long timeout, int flags)
 			fview.resize(ptr.size);
 			memcpy(fview.data(), c.string, size);
 			*fview.view(size).template dataT<char>() = '\0';
+		} else if (c.type == Prepared::Convert::String && c.field->type == tll::scheme::Field::Bytes) {
+			memcpy(data.data(), c.string, c.field->size);
 		} else if (c.type == Prepared::Convert::Numeric) {
 			auto & n = c.numeric;
 			tll::util::Decimal128::Unpacked u128;
