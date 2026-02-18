@@ -1,3 +1,16 @@
+tll-odbc (0.2.5) unstable; urgency=medium
+
+  * heartbeat:
+    Change state to Error on failed post
+    Fix invalid closing hook
+  * odbc:
+    Close cursor when query has no output
+    Configurable strict mode
+    Log of minor cleanups
+    Use full space in bytestring fields
+
+ -- Pavel Shramov <shramov@mexmat.net>  Wed, 18 Feb 2026 15:07:37 +0300
+
 tll-odbc (0.2.4) unstable; urgency=medium
 
   * odbc: Fix incomplete support for default template
