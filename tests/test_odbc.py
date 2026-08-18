@@ -36,13 +36,15 @@ SCHEME = '''yamls://
         ('uint32', 2345678901),
         ('double', 123.123),
         ('decimal128', Decimal('123.456')),
+        ('int32, options.type: fixed4', Decimal('-123.456')),
+        ('int64, options.type: fixed8', Decimal('123.456')),
         ('string, options.sql.column-type: "VARCHAR(8)"', 'string'),
         ('byte32, options.type: string', 'string'),
         ('byte16, options.type: string, options.sql.column-type: "VARCHAR(16)"', '0123456789abcdef'),
         ])
 def test_field(context, db, odbcini, t, value):
-    if db.getinfo(pyodbc.SQL_DBMS_NAME) == 'SQLite' and t == 'decimal128':
-        pytest.skip("Decimal128 not supported on SQLite3")
+    if db.getinfo(pyodbc.SQL_DBMS_NAME) == 'SQLite' and (t == 'decimal128' or 'fixed' in t):
+        pytest.skip("Numeric not supported on SQLite3")
 
     dbname = "Data"
     scheme = f'''yamls://

@@ -2,11 +2,13 @@
 #include <tll/channel/module.h>
 
 #include <tll/scheme/util.h>
+#include <tll/util/fixed_point.h>
 #include <tll/util/listiter.h>
 #include <tll/util/memoryview.h>
 #include <tll/util/decimal128.h>
 
 #include <chrono>
+#include <limits>
 
 #include <sql.h>
 #include <sqlext.h>
@@ -64,7 +66,7 @@ struct Prepared
 	Prepared * output = nullptr; // Non-null for function calls
 
 	struct Convert {
-		enum Type { None, String, Numeric, Timestamp } type = None;
+		enum Type { None, String, Numeric, Timestamp, Fixed } type = None;
 		const tll::scheme::Field * field;
 		SQLLEN param;
 		union {
@@ -109,6 +111,8 @@ tll::result_t<std::string> sql_type(const tll::scheme::Field *field)
 	switch (field->sub_type) {
 	case Field::TimePoint:
 		return "TIMESTAMP";
+	case Field::Fixed:
+		return "NUMERIC";
 	default:
 		break;
 	}
@@ -202,6 +206,45 @@ int write_time(tll::Logger &_log, const Prepared::Convert & convert, Buf data)
 	return 0;
 }
 
+template <typename T, typename Buf>
+int write_fixed(tll::Logger &_log, const Prepared::Convert & convert, Buf data)
+{
+	using tll::scheme::Field;
+	auto & n = convert.numeric;
+	for (auto i = sizeof(T); i < sizeof(n.val); i++)
+		if (n.val[i])
+			return _log.fail(ERANGE, "Value from database too large: non zero byte at offset {}: {}", i, n.val[i]);
+	T value = *(const T *) n.val;
+	if (!n.sign) {
+		if constexpr (std::is_unsigned_v<T>)
+			return _log.fail(EINVAL, "Negative value from database for unsigned fixed: -{}", value);
+		value = -value;
+	}
+	if (auto r = tll::util::fixed_point::convert_mantissa(value, -n.scale, -convert.field->fixed_precision); r)
+		*data.template dataT<T>() = *r;
+	else
+		return _log.fail(EINVAL, "Failed to convert {}e{} from database: {}", value, -n.scale, r.error());
+	return 0;
+}
+
+int sql_bind_decimal(SQLHSTMT sql, int idx, Prepared::Convert &convert)
+{
+	auto &n = convert.numeric;
+	convert.param = sizeof(n);
+	if (auto r = SQLBindParam(sql, idx, SQL_C_NUMERIC, SQL_NUMERIC, n.precision, n.scale, &n, &convert.param))
+		return r;
+
+	SQLHDESC desc = nullptr;
+	const intptr_t scale = n.scale;
+	const intptr_t precision = n.precision;
+	SQLGetStmtAttr(sql, SQL_ATTR_APP_PARAM_DESC, &desc, 0, NULL);
+	SQLSetDescField(desc, idx, SQL_DESC_TYPE, (SQLPOINTER) SQL_C_NUMERIC, 0);
+	SQLSetDescField(desc, idx, SQL_DESC_PRECISION, (SQLPOINTER) precision, 0);
+	SQLSetDescField(desc, idx, SQL_DESC_SCALE, (SQLPOINTER) scale, 0);
+	SQLSetDescField(desc, idx, SQL_DESC_DATA_PTR, (SQLPOINTER) &n, 0);
+	return 0;
+}
+
 template <typename T>
 int sql_bind_numeric(SQLHSTMT sql, int idx, int ctype, int sqltype, const T * data, Prepared::Convert &convert)
 {
@@ -229,6 +272,23 @@ int sql_bind_numeric(SQLHSTMT sql, int idx, int ctype, int sqltype, const T * da
 		convert.timestamp.fraction = parts.second;
 		convert.param = sizeof(convert.timestamp);
 		return SQLBindParam(sql, idx, SQL_C_TYPE_TIMESTAMP, SQL_TYPE_TIMESTAMP, 0, 0, (SQLPOINTER) &convert.timestamp, &convert.param);
+	} else if (convert.field->sub_type == Field::Fixed) {
+		if constexpr (!std::is_same_v<T, double>) {
+			if (convert.param == SQL_NULL_DATA)
+				return SQLBindParam(sql, idx, SQL_C_NUMERIC, SQL_NUMERIC, 0, 0, &convert.numeric, &convert.param);
+			auto & n = convert.numeric;
+			auto * ptr = (std::make_unsigned_t<T> *) n.val;
+			n.precision = std::numeric_limits<T>::digits10 + 1;
+			n.scale = convert.field->fixed_precision;
+			if (*data < 0) {
+				*ptr = -*data;
+				n.sign = 0;
+			} else {
+				*ptr = *data;
+				n.sign = 1;
+			}
+			return sql_bind_decimal(sql, idx, convert);
+		}
 	}
 	return SQLBindParam(sql, idx, ctype, sqltype, 0, 0, (SQLPOINTER) data, &convert.param);
 }
@@ -270,19 +330,7 @@ int sql_bind(SQLHSTMT sql, Prepared::Convert &convert, int idx, const Buf &data)
 		n.precision = 34;
 		n.scale = -u128.exponent;
 		n.sign = u128.sign ? 0 : 1;
-		convert.param = sizeof(n);
-		if (auto r = SQLBindParam(sql, idx, SQL_C_NUMERIC, SQL_NUMERIC, n.precision, n.scale, &n, &convert.param))
-			return r;
-
-		SQLHDESC desc = nullptr;
-		const intptr_t scale = n.scale;
-		const intptr_t precision = n.precision;
-		SQLGetStmtAttr(sql, SQL_ATTR_APP_PARAM_DESC, &desc, 0, NULL);
-		SQLSetDescField(desc, idx, SQL_DESC_TYPE, (SQLPOINTER) SQL_C_NUMERIC, 0);
-		SQLSetDescField(desc, idx, SQL_DESC_PRECISION, (SQLPOINTER) precision, 0);
-		SQLSetDescField(desc, idx, SQL_DESC_SCALE, (SQLPOINTER) scale, 0);
-		SQLSetDescField(desc, idx, SQL_DESC_DATA_PTR, (SQLPOINTER) &n, 0);
-		return 0;
+		return sql_bind_decimal(sql, idx, convert);
 	}
 
 	case Field::Bytes:
@@ -325,6 +373,7 @@ int sql_column(SQLHSTMT sql, Prepared::Convert &convert, int idx, const tll::sch
 	case Prepared::Convert::None:
 		break;
 	case Prepared::Convert::Numeric:
+	case Prepared::Convert::Fixed:
 		return SQLBindCol(sql, idx, SQL_C_NUMERIC, (SQLPOINTER) &convert.numeric, sizeof(SQL_NUMERIC_STRUCT), &convert.param);
 	case Prepared::Convert::Timestamp:
 		return SQLBindCol(sql, idx, SQL_C_TYPE_TIMESTAMP, (SQLPOINTER) &convert.timestamp, sizeof(convert.timestamp), &convert.param);
@@ -635,6 +684,8 @@ int ODBC::_open(const tll::ConstConfig &s)
 				conv.type = Prepared::Convert::Numeric;
 			} else if (f.sub_type == Field::TimePoint) {
 				conv.type = Prepared::Convert::Timestamp;
+			} else if (f.sub_type == Field::Fixed) {
+				conv.type = Prepared::Convert::Fixed;
 			}
 		}
 	}
@@ -1143,6 +1194,20 @@ int ODBC::_process(long timeout, int flags)
 			case Field::Double: if (auto r = write_time<double>(_log, c, data); r) return r; break;
 			default:
 				return _log.fail(EINVAL, "Invalid field type for timestamp: {}", c.field->type);
+			}
+		} else if (c.type == Prepared::Convert::Fixed) {
+			using tll::scheme::Field;
+			switch (c.field->type) {
+			case Field::Int8: if (auto r = write_fixed<int8_t>(_log, c, data); r) return r; break;
+			case Field::Int16: if (auto r = write_fixed<int16_t>(_log, c, data); r) return r; break;
+			case Field::Int32: if (auto r = write_fixed<int32_t>(_log, c, data); r) return r; break;
+			case Field::Int64: if (auto r = write_fixed<int64_t>(_log, c, data); r) return r; break;
+			case Field::UInt8: if (auto r = write_fixed<uint8_t>(_log, c, data); r) return r; break;
+			case Field::UInt16: if (auto r = write_fixed<uint16_t>(_log, c, data); r) return r; break;
+			case Field::UInt32: if (auto r = write_fixed<uint32_t>(_log, c, data); r) return r; break;
+			case Field::UInt64: if (auto r = write_fixed<uint64_t>(_log, c, data); r) return r; break;
+			default:
+				return _log.fail(EINVAL, "Invalid field type for fixed point: {}", c.field->type);
 			}
 		}
 	}
