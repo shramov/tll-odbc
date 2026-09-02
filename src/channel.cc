@@ -250,6 +250,8 @@ int sql_bind_numeric(SQLHSTMT sql, int idx, int ctype, int sqltype, const T * da
 {
 	using tll::scheme::Field;
 	if (convert.field->sub_type == Field::TimePoint) {
+		if (convert.param == SQL_NULL_DATA)
+			return SQLBindParam(sql, idx, SQL_C_TYPE_TIMESTAMP, SQL_TYPE_TIMESTAMP, 0, 0, (SQLPOINTER) &convert.timestamp, &convert.param);
 		std::pair<time_t, unsigned> parts = {};
 		switch (convert.field->time_resolution) {
 		case TLL_SCHEME_TIME_NS: parts = split_time<T, std::nano>(data); break;

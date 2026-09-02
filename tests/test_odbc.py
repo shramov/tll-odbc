@@ -313,18 +313,28 @@ def test_null(context, db, odbcini):
     assert [c.unpack(m).as_dict() for m in c.result[:-1]] == [{'f0': 10}, {'f0': 0, 'f1': 123.456}, {'f0': 0, 'f2': 1234}]
     assert [(m.type, m.msgid) for m in c.result[-1:]] == [(c.Type.Control, c.scheme_control.messages.EndOfData.msgid)]
 
-def test_null_insert(context, db, odbcini):
+@pytest.mark.parametrize("t,v",
+        [('uint16', 123),
+         ('double', 123.123),
+         ('int64, options.type: fixed3', Decimal('123.456')),
+         ('decimal128', Decimal('123.456')),
+         ('uint32, options: {type: time_point, resolution: s}', datetime.datetime(2000, 1, 2, tzinfo=datetime.timezone.utc)),
+         ('byte16, options.type: string', 'string'),
+        ])
+def test_null_insert(context, db, odbcini, t, v):
+    if db.getinfo(pyodbc.SQL_DBMS_NAME) == 'SQLite' and (t == 'decimal128' or 'fixed' in t):
+        pytest.skip("Numeric not supported on SQLite3")
+
     dbname = "Data"
-    scheme = '''yamls://
+    scheme = f'''yamls://
     - name: Data
       options.sql.with-seq: no
       options.sql.template: insert
       id: 10
       fields:
-        - {name: pmap, type: uint8, options.pmap: yes}
-        - {name: f0, type: int32}
-        - {name: f1, type: double, options.optional: yes}
-        - {name: f2, type: byte16, options.type: string, options.optional: yes}
+        - {{name: pmap, type: uint8, options.pmap: yes}}
+        - {{name: f0, type: int32}}
+        - {{name: f1, type: {t}, options.optional: yes}}
     '''
 
     with db.cursor() as c:
@@ -335,12 +345,14 @@ def test_null_insert(context, db, odbcini):
     c.open()
 
     c.post({'f0': 10}, name='Data')
-    c.post({'f1': 123.456}, name='Data')
-    c.post({'f2': "string"}, name='Data')
+    c.post({'f1': v}, name='Data')
+
+    if isinstance(v, datetime.datetime):
+        v = v.replace(tzinfo=None) # pyodbc returns datetime without timezone
 
     with db.cursor() as c:
-        r = list(c.execute(f'SELECT f0,f1,f2 FROM "{dbname}"'))
-        assert [tuple(x) for x in r] == [(10, None, None), (0, 123.456, None), (0, None, "string")]
+        r = list(c.execute(f'SELECT f0,f1 FROM "{dbname}"'))
+        assert [tuple(x) for x in r] == [(10, None), (0, v)]
 
 @pytest.mark.parametrize("t,prec,value",
         [('uint16', 'day', '2024-01-02'),
