@@ -454,6 +454,7 @@ class ODBC : public tll::channel::Base<ODBC>
 	enum class Function { Fields, Empty } _function_mode = Function::Fields;
 
 	bool _strict = true;
+	bool _eod_always = false;
 
  public:
 	static constexpr auto process_policy() { return ProcessPolicy::Custom; }
@@ -556,6 +557,16 @@ class ODBC : public tll::channel::Base<ODBC>
 		_sqlstate = std::string_view(_errorbuf.data() + 1, 5);
 		return std::string_view(_errorbuf.data() + 1, size - 1); // Skip first delimiter
 	}
+
+	int _report_eod()
+	{
+		tll_msg_t msg = {
+			.type = TLL_MESSAGE_CONTROL,
+			.msgid = odbc_scheme::EndOfData::meta_id(),
+		};
+		_callback(&msg);
+		return 0;
+	}
 };
 
 int ODBC::_init(const Channel::Url &url, Channel * master)
@@ -575,6 +586,7 @@ int ODBC::_init(const Channel::Url &url, Channel * master)
 	_create_mode = reader.getT("create-mode", Create::No, {{"no", Create::No}, {"checked", Create::Checked}, {"always", Create::Always}});
 	_quotes = reader.getT("quote-mode", Quotes::PSQL, {{"sqlite", Quotes::SQLite}, {"psql", Quotes::PSQL}, {"sybase", Quotes::Sybase}, {"none", Quotes::None}});
 	_function_mode = reader.getT("function-mode", Function::Fields, {{"fields", Function::Fields}, {"empty", Function::Empty}});
+	_eod_always = reader.getT("end-of-data", false, {{"always", true}, {"normal", false}});
 	_strict = reader.getT("strict", true);
 	if (!reader)
 		return _log.fail(EINVAL, "Invalid url: {}", reader.error());
@@ -906,6 +918,8 @@ int ODBC::_post(const tll_msg_t *msg, int flags)
 
 	if (!insert.sql) {
 		_log.trace("Skip message {} without SQL statement", insert.message->name);
+		if (_eod_always)
+			return _report_eod();
 		return 0;
 	}
 
@@ -932,20 +946,17 @@ int ODBC::_post(const tll_msg_t *msg, int flags)
 
 	if (auto r = _execute(insert.sql, "insert"); r) {
 		if (r == ENOENT) {
-			if (!insert.output)
+			if (!insert.output && !_eod_always)
 				return 0;
-			tll_msg_t msg = {
-				.type = TLL_MESSAGE_CONTROL,
-				.msgid = odbc_scheme::EndOfData::meta_id(),
-			};
-			_callback(&msg);
-			return 0;
+			return _report_eod();
 		}
 		return r;
 	}
 
 	if (!insert.output) {
 		SQLCloseCursor(insert.sql);
+		if (_eod_always)
+			return _report_eod();
 		return 0;
 	}
 

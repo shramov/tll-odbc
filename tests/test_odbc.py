@@ -72,6 +72,33 @@ def test_field(context, db, odbcini, t, value):
 
     assert c.unpack(c.result[-1]).as_dict() == {'f0': value}
 
+@pytest.mark.parametrize("eod", ["", "normal", "always"])
+def test_eod(context, db, odbcini, eod):
+    scheme = '''yamls://
+    - name: Data
+      id: 10
+      fields:
+        - {name: f0, type: int32}
+    '''
+
+    with db.cursor() as c:
+        c.execute('DROP TABLE IF EXISTS "Data"')
+
+    c = Accum(f'odbc://;name=odbc;create-mode=checked;end-of-data={eod}', scheme=scheme, dump='yes', context=context, **odbcini)
+    c.open()
+    c.post({'f0': 123}, name='Data', seq=100)
+    if eod == 'always':
+        assert [(m.type, m.msgid, m.seq) for m in c.result] == [(c.Type.Control, c.scheme_control['EndOfData'].msgid, 0)]
+        c.result.clear()
+
+    c.post({'message': 10}, name='Query', type=c.Type.Control)
+
+    for _ in range(3):
+        c.process()
+    assert [(m.type, m.msgid, m.seq) for m in c.result] == [(c.Type.Data, 10, 100), (c.Type.Control, c.scheme_control['EndOfData'].msgid, 0)]
+
+    assert c.unpack(c.result[0]).as_dict() == {'f0': 123}
+
 @pytest.mark.parametrize("query,result",
         [([], list(range(10))),
         ([{'field': 'f0', 'op': 'EQ', 'value': {'i': 1000}}], [1]),
