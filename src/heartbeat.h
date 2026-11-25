@@ -11,6 +11,9 @@ class HeartBeat : public tll::channel::Prefix<HeartBeat>
 	using Base = tll::channel::Prefix<HeartBeat>;
 	tll::time_point _last = {};
 	tll::duration _timeout = {};
+	int _msgid_eod = -1;
+	bool _eod = false;
+	bool _busy = false;
 	std::string _message_name;
 	tll_msg_t _msg = {};
 	std::vector<char> _buf;
@@ -28,11 +31,12 @@ class HeartBeat : public tll::channel::Prefix<HeartBeat>
 
 		auto reader = channel_props_reader(cfg);
 		_timeout = reader.getT<tll::duration>("timeout", 1s);
+		_eod = reader.getT("end-of-data", false, {{"always", true}, {"normal", false}});
 		_message_name = reader.getT<std::string>("message");
 		if (!reader)
 			return _log.fail(EINVAL, "Invalid url: {}", reader.error());
 
-		auto curl = child_url_parse("timer://;dump=yes", "timer");
+		auto curl = child_url_parse("timer://", "timer");
 		if (!curl)
 			return _log.fail(EINVAL, "Failed to parse timer url: {}", curl.error());
 		curl->set("clock", "monotonic");
@@ -59,6 +63,19 @@ class HeartBeat : public tll::channel::Prefix<HeartBeat>
 		_msg.data = _buf.data();
 		_msg.size = _buf.size();
 
+		if (auto control = _child->scheme(TLL_MESSAGE_CONTROL); control) {
+			if (auto m = control->lookup("EndOfData"); m) {
+				_msgid_eod = m->msgid;
+			}
+		}
+
+		if (_eod) {
+			if (_msgid_eod == -1)
+				return _log.fail(ENOENT, "EndOfData not found in child control scheme");
+			_log.info("Wait for EndOfData with msgid {} after post", _msgid_eod);
+		} else
+			_msgid_eod = -1;
+
 		_last = tll::time::now();
 		if (auto r = _timer->open(); r)
 			return _log.fail(EINVAL, "Failed to open timer");
@@ -68,6 +85,8 @@ class HeartBeat : public tll::channel::Prefix<HeartBeat>
 	int _on_closing()
 	{
 		_timer->close();
+		_busy = false;
+		_msgid_eod = -1;
 		_msg = {};
 		return Base::_on_closing();
 	}
@@ -77,8 +96,10 @@ class HeartBeat : public tll::channel::Prefix<HeartBeat>
 		auto now = tll::time::now();
 		if (_last + _timeout > now)
 			return 0;
+		if (_msgid_eod != -1 && _busy)
+			return 0;
 		_last = now;
-		if (auto r = _child->post(&_msg); r)
+		if (auto r = _post(&_msg, 0); r)
 			return state_fail(r, "Heartbeat post failed");
 		return 0;
 	}
@@ -87,13 +108,26 @@ class HeartBeat : public tll::channel::Prefix<HeartBeat>
 	int _post(const tll_msg_t * msg, int flags)
 	{
 		_last = tll::time::now();
-		return Base::_post(msg, flags);
+		_busy = msg->type == TLL_MESSAGE_DATA;
+		auto r = Base::_post(msg, flags);
+		if (r)
+			_busy = false;
+		return r;
 	}
 
 	int _on_data(const tll_msg_t * msg)
 	{
 		_last = tll::time::now();
 		return Base::_on_data(msg);
+	}
+
+	int _on_other(const tll_msg_t *msg)
+	{
+		if (_msgid_eod != -1 && msg->type == TLL_MESSAGE_CONTROL && msg->msgid == _msgid_eod) {
+			_last = tll::time::now();
+			_busy = false;
+		}
+		return Base::_on_other(msg);
 	}
 };
 
